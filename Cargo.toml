@@ -1,0 +1,15 @@
+[package]
+name = "n-body-works"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+egui = "0.29.1"
+raw-window-handle = "0.6.2"
+egui-wgpu = {version = "0.29.1", features = ["winit"]}
+egui-winit = "0.29.1"
+winit = "0.30.5"
+pollster = "0.4.0"
+wgpu = "23.0.0"
+bytemuck = "1.19.0"
+rand = "0.9.0-alpha.2"

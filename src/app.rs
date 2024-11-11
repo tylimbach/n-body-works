@@ -1,0 +1,447 @@
+use crate::egui_tools::EguiRenderer;
+use egui_wgpu::{wgpu, ScreenDescriptor};
+use std::sync::{Arc, Mutex};
+use egui_wgpu::wgpu::util::DeviceExt;
+use rand::Rng;
+use winit::application::ApplicationHandler;
+use winit::dpi::PhysicalSize;
+use winit::event::WindowEvent;
+use winit::event_loop::ActiveEventLoop;
+use winit::window::{Window, WindowId};
+use crate::buffer_tools::{DoubleBuffer, DoubleBufferUnsafe};
+
+pub fn start_simulation_thread(mut state_buffer: Arc<DoubleBufferUnsafe<SimulationState>>) {
+    std::thread::spawn(move || {
+        let mut last_time = std::time::Instant::now();
+
+        loop {
+            let now = std::time::Instant::now();
+            let dt = now.duration_since(last_time).as_secs_f32();
+            last_time = now;
+
+            let mut simulation_state = state_buffer.get_write_buffer();
+            simulation_state.update(dt);
+
+            state_buffer.commit();
+        }
+    });
+}
+
+#[derive(Clone)]
+pub struct SimulationState {
+    pub particle_count: u32,
+    pub positions: Vec<[f32; 3]>,
+    pub velocities: Vec<[f32; 3]>,
+    pub masses: Vec<f32>,
+    pub g: f32,
+}
+impl SimulationState {
+    pub fn new(particle_count: u32) -> Self {
+/*      arc  
+        let positions = (0..particle_count)
+            .map(|i| {
+                let angle = (i as f32 * 0.01).sin();
+                [angle * 0.5, angle.cos() * 0.5, (i as f32 * 0.01).sin() * 0.5]
+            })
+            .collect();
+*/
+        let mut rng = rand::thread_rng();
+        let positions = (0..particle_count)
+            .map(|_| {
+                // Generate random values between -1.0 and 1.0
+                let r = f32::sqrt(rng.gen_range(0.0..1.0)); // Weighted towards 0 for radial density
+                let theta = rng.gen_range(0.0..std::f32::consts::TAU); // Random angle
+                let phi = rng.gen_range(0.0..std::f32::consts::PI); // Random polar angle
+
+                // Convert spherical coordinates to cartesian
+                let x = r * theta.cos() * phi.sin();
+                let y = r * theta.sin() * phi.sin();
+                let z = 0.0;
+                // let z = r * phi.cos();
+
+                [x, y, z]
+            })
+            .collect();
+        
+        let velocities = vec![[0.0, 0.0, 0.0]; particle_count as usize];
+        let masses = vec![1.0; particle_count as usize];
+        let g = 6.67430e-11;
+        
+        Self {
+            particle_count,
+            positions,
+            velocities,
+            masses,
+            g,
+        }
+    }
+    
+    pub fn update(&mut self, dt: f32) {
+        // F = (G*m1m2/(r*r)) * (unit vector)
+        // F = ma
+        for p1 in 0..self.particle_count as usize {
+            let mut acceleration = [0.0, 0.0, 0.0];
+            let p1_pos = self.positions[p1];
+            // calculate forces
+            for p2 in 0..self.particle_count as usize {
+                if p1 == p2 {
+                    continue;
+                }
+                let p2_pos = self.positions[p2];
+                let p2_mass = self.masses[p2];
+                
+                let d = f32::sqrt(
+                    (p2_pos[0] - p1_pos[0]) * (p2_pos[0] - p1_pos[0]) +
+                    (p2_pos[1] - p1_pos[1]) * (p2_pos[1] - p1_pos[1]) +
+                    (p2_pos[2] - p1_pos[2]) * (p2_pos[2] - p1_pos[2])
+                );
+                
+                if d < 1e-3 {
+                    continue;
+                }
+                
+                let unit_vector = [
+                    (p2_pos[0] - p1_pos[0]) / d,
+                    (p2_pos[1] - p1_pos[1]) / d,
+                    (p2_pos[2] - p1_pos[2]) / d,
+                ];
+                // we combined the above equations to jump straight to acceleration
+                let acceleration_vector = unit_vector.map(|x| x * (self.g * p2_mass / (d * d)));
+                
+                for i in 0..3 {
+                    acceleration[i] += acceleration_vector[i];
+                }
+            }
+            
+            // update pos (Euler for now)
+            for (pos, vel) in self.positions.iter_mut().zip(self.velocities.iter_mut()) {
+                for i in 0..3 {
+                    vel[i] += acceleration[i] * dt;
+                    pos[i] += vel[i] * dt;
+                }
+            }
+        }
+        
+    }
+}
+
+pub struct AppState {
+    pub device: wgpu::Device,
+    pub queue: wgpu::Queue,
+    pub surface_config: wgpu::SurfaceConfiguration,
+    pub surface: wgpu::Surface<'static>,
+    pub scale_factor: f32,
+    pub egui_renderer: EguiRenderer,
+    pub nbody_pipeline: wgpu::RenderPipeline,
+    pub particle_vertex_buffer: wgpu::Buffer,
+    pub state_buffer_render: Arc<DoubleBufferUnsafe<SimulationState>>,
+}
+
+impl AppState {
+    pub async fn new(
+        instance: &wgpu::Instance,
+        surface: wgpu::Surface<'static>,
+        window: &Window,
+        width: u32,
+        height: u32,
+    ) -> Self {
+        let particle_count = 1000;
+        let simulation_state = Arc::new(DoubleBufferUnsafe::new(SimulationState::new(particle_count)));
+        let state_buffer_sim = Arc::clone(&simulation_state);
+        let state_buffer_render = Arc::clone(&simulation_state);
+        
+        start_simulation_thread(state_buffer_sim);
+        
+        let adapter = instance
+            .request_adapter(&wgpu::RequestAdapterOptions {
+                power_preference: wgpu::PowerPreference::HighPerformance,
+                compatible_surface: Some(&surface),
+                force_fallback_adapter: false,
+            })
+            .await
+            .expect("Failed to find a suitable adapter");
+
+        let (device, queue) = adapter
+            .request_device(
+                &wgpu::DeviceDescriptor {
+                    label: Some("Device"),
+                    required_features: wgpu::Features::empty(),
+                    required_limits: wgpu::Limits::default(),
+                    memory_hints: Default::default(),
+                },
+                None,
+            )
+            .await
+            .expect("Failed to create device");
+
+        let swapchain_capabilities = surface.get_capabilities(&adapter);
+        let surface_format = swapchain_capabilities
+            .formats
+            .iter()
+            .find(|&&f| f == wgpu::TextureFormat::Bgra8UnormSrgb)
+            .expect("Surface format not supported");
+
+        let surface_config = wgpu::SurfaceConfiguration {
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            format: *surface_format,
+            width,
+            height,
+            present_mode: wgpu::PresentMode::AutoVsync,
+            alpha_mode: swapchain_capabilities.alpha_modes[0],
+            view_formats: vec![],
+            desired_maximum_frame_latency: 0,
+        };
+
+        surface.configure(&device, &surface_config);
+
+        // egui
+        let egui_renderer = EguiRenderer::new(&device, surface_config.format, None, 1, window);
+        let scale_factor = 1.0;
+
+        // viewport
+        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("N-Body Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("particle.wgsl").into()),
+        });
+
+        let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Pipeline Layout"),
+            bind_group_layouts: &[],
+            push_constant_ranges: &[],
+        });
+
+        let nbody_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("NBody Pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: "vs_main",
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &wgpu::vertex_attr_array![0 => Float32x3],
+                }],
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: "fs_main",
+                compilation_options: Default::default(),
+                targets: &[Some(surface_config.format.into())],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::PointList,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
+        // Initialize particle buffer with dummy data
+        let initial_particles = vec![[0.0f32, 0.0f32, 0.0f32]; 1000];
+        let particle_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Particle Vertex Buffer"),
+            contents: bytemuck::cast_slice(&initial_particles),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
+
+
+        Self {
+            device,
+            queue,
+            surface_config,
+            surface,
+            scale_factor,
+            egui_renderer,
+            nbody_pipeline,
+            particle_vertex_buffer,
+            state_buffer_render,
+        }
+    }
+
+    pub fn resize_surface(&mut self, width: u32, height: u32) {
+        self.surface_config.width = width;
+        self.surface_config.height = height;
+        self.surface.configure(&self.device, &self.surface_config);
+    }
+}
+
+pub struct App {
+    instance: wgpu::Instance,
+    state: Option<AppState>,
+    window: Option<Arc<Window>>,
+}
+
+impl App {
+    pub fn new() -> Self {
+        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+        Self {
+            instance,
+            state: None,
+            window: None,
+        }
+    }
+
+    async fn set_window(&mut self, window: Window) {
+        let window = Arc::new(window);
+        let initial_width = 1360;
+        let initial_height = 768;
+
+        let _ = window.request_inner_size(PhysicalSize::new(initial_width, initial_height));
+
+        let surface = self
+            .instance
+            .create_surface(window.clone())
+            .expect("Failed to create surface!");
+
+        let state = AppState::new(
+            &self.instance,
+            surface,
+            &window,
+            initial_width,
+            initial_width,
+        )
+            .await;
+        
+
+        self.window.get_or_insert(window);
+        self.state.get_or_insert(state);
+    }
+
+    fn handle_resized(&mut self, width: u32, height: u32) {
+        self.state.as_mut().unwrap().resize_surface(width, height);
+    }
+
+    fn handle_redraw(&mut self) {
+        let state = self.state.as_mut().unwrap();
+
+        let screen_descriptor = ScreenDescriptor {
+            size_in_pixels: [state.surface_config.width, state.surface_config.height],
+            pixels_per_point: self.window.as_ref().unwrap().scale_factor() as f32
+                * state.scale_factor,
+        };
+
+        let surface_texture = state
+            .surface
+            .get_current_texture()
+            .expect("Failed to acquire next swap chain texture");
+
+        let surface_view = surface_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = state
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+        let window = self.window.as_ref().unwrap();
+
+        // egui pass
+        {
+            state.egui_renderer.begin_frame(window);
+
+            egui::Window::new("winit + egui + wgpu says hello!")
+                .resizable(true)
+                .vscroll(true)
+                .default_open(false)
+                .show(state.egui_renderer.context(), |ui| {
+                    ui.label("Label!");
+
+                    if ui.button("Button!").clicked() {
+                        println!("boom!")
+                    }
+
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "Pixels per point: {}",
+                            state.egui_renderer.context().pixels_per_point()
+                        ));
+                        if ui.button("-").clicked() {
+                            state.scale_factor = (state.scale_factor - 0.1).max(0.3);
+                        }
+                        if ui.button("+").clicked() {
+                            state.scale_factor = (state.scale_factor + 0.1).min(3.0);
+                        }
+                    });
+                });
+
+            state.egui_renderer.end_frame_and_draw(
+                &state.device,
+                &state.queue,
+                &mut encoder,
+                window,
+                &surface_view,
+                screen_descriptor,
+            );
+        }
+        
+        // nbody pass
+        {
+            let simulation_state = state.state_buffer_render.get_read_buffer();
+            
+            state.queue.write_buffer(
+                &state.particle_vertex_buffer,
+                0,
+                bytemuck::cast_slice(&simulation_state.positions),
+            );
+
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("NBody Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &surface_view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            render_pass.set_pipeline(&state.nbody_pipeline);
+            render_pass.set_vertex_buffer(0, state.particle_vertex_buffer.slice(..));
+            render_pass.draw(0..simulation_state.particle_count, 0..1);
+        }
+
+        state.queue.submit(Some(encoder.finish()));
+        surface_texture.present();
+    }
+}
+
+impl ApplicationHandler for App {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let window = event_loop
+            .create_window(Window::default_attributes())
+            .unwrap();
+        pollster::block_on(self.set_window(window));
+    }
+
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
+        self.state
+            .as_mut()
+            .unwrap()
+            .egui_renderer
+            .handle_input(self.window.as_ref().unwrap(), &event);
+
+        match event {
+            WindowEvent::CloseRequested => {
+                println!("The close button was pressed; stopping");
+                event_loop.exit();
+            }
+            WindowEvent::RedrawRequested => {
+                self.handle_redraw();
+
+                self.window.as_ref().unwrap().request_redraw();
+            }
+            WindowEvent::Resized(new_size) => {
+                self.handle_resized(new_size.width, new_size.height);
+            }
+            _ => (),
+        }
+    }
+}
