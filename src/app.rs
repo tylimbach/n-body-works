@@ -1,14 +1,14 @@
+use crate::buffer_tools::{DoubleBuffer, DoubleBufferUnsafe};
 use crate::egui_tools::EguiRenderer;
-use egui_wgpu::{wgpu, ScreenDescriptor};
-use std::sync::{Arc, Mutex};
 use egui_wgpu::wgpu::util::DeviceExt;
+use egui_wgpu::{wgpu, ScreenDescriptor};
 use rand::Rng;
+use std::sync::{Arc, Mutex};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
-use crate::buffer_tools::{DoubleBuffer, DoubleBufferUnsafe};
 
 pub fn start_simulation_thread(mut state_buffer: Arc<DoubleBufferUnsafe<SimulationState>>) {
     std::thread::spawn(move || {
@@ -37,36 +37,28 @@ pub struct SimulationState {
 }
 impl SimulationState {
     pub fn new(particle_count: u32) -> Self {
-/*      arc  
-        let positions = (0..particle_count)
-            .map(|i| {
-                let angle = (i as f32 * 0.01).sin();
-                [angle * 0.5, angle.cos() * 0.5, (i as f32 * 0.01).sin() * 0.5]
-            })
-            .collect();
-*/
         let mut rng = rand::thread_rng();
         let positions = (0..particle_count)
             .map(|_| {
-                // Generate random values between -1.0 and 1.0
-                let r = f32::sqrt(rng.gen_range(0.0..1.0)); // Weighted towards 0 for radial density
-                let theta = rng.gen_range(0.0..std::f32::consts::TAU); // Random angle
-                let phi = rng.gen_range(0.0..std::f32::consts::PI); // Random polar angle
+                let r = f32::powf(rng.gen_range(0.0..1.0), 0.2);
+                let theta = rng.gen_range(0.0..std::f32::consts::TAU);
+                // phi stuff is for 3d
+                // let phi = rng.gen_range(0.0..std::f32::consts::PI);
 
                 // Convert spherical coordinates to cartesian
-                let x = r * theta.cos() * phi.sin();
-                let y = r * theta.sin() * phi.sin();
+                let x = r * theta.cos(); // * phi.sin();
+                let y = r * theta.sin(); // * phi.sin();
                 let z = 0.0;
                 // let z = r * phi.cos();
 
                 [x, y, z]
             })
             .collect();
-        
+
         let velocities = vec![[0.0, 0.0, 0.0]; particle_count as usize];
-        let masses = vec![1.0; particle_count as usize];
+        let masses = vec![500.0; particle_count as usize];
         let g = 6.67430e-11;
-        
+
         Self {
             particle_count,
             positions,
@@ -75,10 +67,11 @@ impl SimulationState {
             g,
         }
     }
-    
+
     pub fn update(&mut self, dt: f32) {
         // F = (G*m1m2/(r*r)) * (unit vector)
         // F = ma
+        // a = G*m2/(r*r) * unit vector
         for p1 in 0..self.particle_count as usize {
             let mut acceleration = [0.0, 0.0, 0.0];
             let p1_pos = self.positions[p1];
@@ -89,17 +82,17 @@ impl SimulationState {
                 }
                 let p2_pos = self.positions[p2];
                 let p2_mass = self.masses[p2];
-                
+
                 let d = f32::sqrt(
-                    (p2_pos[0] - p1_pos[0]) * (p2_pos[0] - p1_pos[0]) +
-                    (p2_pos[1] - p1_pos[1]) * (p2_pos[1] - p1_pos[1]) +
-                    (p2_pos[2] - p1_pos[2]) * (p2_pos[2] - p1_pos[2])
+                    (p2_pos[0] - p1_pos[0]) * (p2_pos[0] - p1_pos[0])
+                        + (p2_pos[1] - p1_pos[1]) * (p2_pos[1] - p1_pos[1])
+                        + (p2_pos[2] - p1_pos[2]) * (p2_pos[2] - p1_pos[2]),
                 );
-                
-                if d < 1e-3 {
+
+                if d < 1e-5 {
                     continue;
                 }
-                
+
                 let unit_vector = [
                     (p2_pos[0] - p1_pos[0]) / d,
                     (p2_pos[1] - p1_pos[1]) / d,
@@ -107,21 +100,21 @@ impl SimulationState {
                 ];
                 // we combined the above equations to jump straight to acceleration
                 let acceleration_vector = unit_vector.map(|x| x * (self.g * p2_mass / (d * d)));
-                
+
                 for i in 0..3 {
                     acceleration[i] += acceleration_vector[i];
                 }
             }
-            
-            // update pos (Euler for now)
-            for (pos, vel) in self.positions.iter_mut().zip(self.velocities.iter_mut()) {
-                for i in 0..3 {
-                    vel[i] += acceleration[i] * dt;
-                    pos[i] += vel[i] * dt;
-                }
+
+            // euler method
+            for (vel, (pos, &acc)) in self.velocities[p1]
+                .iter_mut()
+                .zip(self.positions[p1].iter_mut().zip(acceleration.iter()))
+            {
+                *vel += acc * dt;
+                *pos += *vel * dt;
             }
         }
-        
     }
 }
 
@@ -146,12 +139,14 @@ impl AppState {
         height: u32,
     ) -> Self {
         let particle_count = 1000;
-        let simulation_state = Arc::new(DoubleBufferUnsafe::new(SimulationState::new(particle_count)));
+        let simulation_state = Arc::new(DoubleBufferUnsafe::new(SimulationState::new(
+            particle_count,
+        )));
         let state_buffer_sim = Arc::clone(&simulation_state);
         let state_buffer_render = Arc::clone(&simulation_state);
-        
+
         start_simulation_thread(state_buffer_sim);
-        
+
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -247,7 +242,6 @@ impl AppState {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
-
         Self {
             device,
             queue,
@@ -303,8 +297,7 @@ impl App {
             initial_width,
             initial_width,
         )
-            .await;
-        
+        .await;
 
         self.window.get_or_insert(window);
         self.state.get_or_insert(state);
@@ -377,11 +370,11 @@ impl App {
                 screen_descriptor,
             );
         }
-        
+
         // nbody pass
         {
             let simulation_state = state.state_buffer_render.get_read_buffer();
-            
+
             state.queue.write_buffer(
                 &state.particle_vertex_buffer,
                 0,
@@ -445,3 +438,4 @@ impl ApplicationHandler for App {
         }
     }
 }
+
