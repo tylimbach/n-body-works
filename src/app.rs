@@ -10,7 +10,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
 
-pub fn start_simulation_thread(mut state_buffer: Arc<TripleBuffer<SimulationState>>) {
+pub fn start_simulation_thread(state_buffer: Arc<TripleBuffer<SimulationState>>) {
     std::thread::spawn(move || {
         let mut last_time = std::time::Instant::now();
 
@@ -28,16 +28,6 @@ pub fn start_simulation_thread(mut state_buffer: Arc<TripleBuffer<SimulationStat
             state_buffer.commit();
         }
     });
-}
-
-struct Instance {
-    position: [f32; 3],
-}
-
-#[repr(C)]
-#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
-struct InstanceRaw {
-    model: [[f32; 4]; 4],
 }
 
 #[derive(Clone)]
@@ -69,7 +59,7 @@ impl SimulationState {
             .collect();
 
         let velocities = vec![[0.0, 0.0, 0.0]; particle_count as usize];
-        let masses = vec![100.0; particle_count as usize];
+        let masses = vec![100000.0; particle_count as usize];
         let g = 6.67430e-11;
 
         Self {
@@ -154,7 +144,7 @@ impl AppState {
         width: u32,
         height: u32,
     ) -> Self {
-        let particle_count = 1000;
+        let particle_count = 100;
         let simulation_state = Arc::new(TripleBuffer::new(SimulationState::new(particle_count)));
         let state_buffer_sim = Arc::clone(&simulation_state);
         let state_buffer_render = Arc::clone(&simulation_state);
@@ -261,10 +251,10 @@ impl AppState {
                 targets: &[Some(surface_config.format.into())],
             }),
             primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::PointList,
+                topology: wgpu::PrimitiveTopology::TriangleList,
                 strip_index_format: None,
                 front_face: wgpu::FrontFace::Ccw,
-                cull_mode: Some(wgpu::Face::Back),
+                cull_mode: None,
                 polygon_mode: wgpu::PolygonMode::Fill,
                 unclipped_depth: false,
                 conservative: false,
@@ -309,7 +299,17 @@ impl AppState {
             [-1.0, -1.0], // Bottom-left (reused)
             [1.0, 1.0],   // Top-right (reused)
             [-1.0, 1.0],  // Top-left
-        ];
+        ]
+        .iter()
+        .map(|x| {
+            x.iter()
+                .map(|x| x * 0.01)
+                .collect::<Vec<f32>>()
+                .try_into()
+                .unwrap()
+        })
+        .collect::<Vec<[f32; 2]>>();
+
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Particle Vertex Buffer"),
             contents: bytemuck::cast_slice(&quad_vertices),
@@ -333,6 +333,11 @@ impl AppState {
     }
 
     pub fn resize_surface(&mut self, width: u32, height: u32) {
+        self.queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[width as f32, height as f32]),
+        );
         self.surface_config.width = width;
         self.surface_config.height = height;
         self.surface.configure(&self.device, &self.surface_config);
@@ -452,24 +457,13 @@ impl App {
         {
             let simulation_state = state.state_buffer_render.get_read_buffer();
 
-            state.queue.write_buffer(
-                &state.instance_buffer,
-                0,
-                bytemuck::cast_slice(&simulation_state.positions),
-            );
-
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("NBody Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &surface_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.0,
-                            g: 0.0,
-                            b: 0.0,
-                            a: 1.0,
-                        }),
+                        load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -477,6 +471,12 @@ impl App {
                 timestamp_writes: None,
                 occlusion_query_set: None,
             });
+
+            state.queue.write_buffer(
+                &state.instance_buffer,
+                0,
+                bytemuck::cast_slice(&simulation_state.positions),
+            );
 
             render_pass.set_pipeline(&state.nbody_pipeline);
             render_pass.set_bind_group(0, &state.bind_group, &[]);

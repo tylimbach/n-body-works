@@ -1,7 +1,6 @@
 struct VSOutput {
     @builtin(position) position: vec4<f32>,
     @location(0) quad_position: vec2<f32>,
-    @location(1) debug_color: vec3<f32>,
 };
 
 struct Uniforms {
@@ -16,27 +15,25 @@ fn vs_main(
     @location(1) position: vec3<f32>,
 ) -> VSOutput {
     var out: VSOutput;
-    
-    // Make particles much bigger for debugging
-    let size = 0.5;
 
-    let final_pos = position.xy + (vert * size);
+    let scale = 1.0;
+    let final_pos = position.xy + vert * scale;
 
     out.position = vec4(final_pos, 0.0, 1.0);
     out.quad_position = vert;
-    
-    // Debug color based on position
-    out.debug_color = vec3(
-        (position.x + 1.0) * 0.5,  // R: x mapped to 0-1
-        (position.y + 1.0) * 0.5,  // G: y mapped to 0-1
-        0.5                             // B: constant
-    );
 
     return out;
 }
 
 @fragment
 fn fs_main(input: VSOutput) -> @location(0) vec4<f32> {
-    // Disable circle masking for debug
-    return vec4(input.debug_color, 1.0);
+    let dist = length(input.quad_position);
+
+    if dist > 0.01 {
+      discard;
+    }
+
+    let alpha = smoothstep(1.0, 0.9, dist);
+
+    return vec4(1.0, 1.0, 0.0, alpha);
 }
