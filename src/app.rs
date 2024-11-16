@@ -1,6 +1,6 @@
-use crate::buffer_tools::{DoubleBuffer, DoubleBufferUnsafe};
+use crate::buffer_tools::{DoubleBuffer, DoubleBufferUnsafe, TripleBuffer};
 use crate::egui_tools::EguiRenderer;
-use egui_wgpu::wgpu::util::DeviceExt;
+use egui_wgpu::wgpu::util::{DeviceExt, RenderEncoder};
 use egui_wgpu::{wgpu, ScreenDescriptor};
 use rand::Rng;
 use std::sync::{Arc, Mutex};
@@ -10,7 +10,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
 
-pub fn start_simulation_thread(mut state_buffer: Arc<DoubleBufferUnsafe<SimulationState>>) {
+pub fn start_simulation_thread(mut state_buffer: Arc<TripleBuffer<SimulationState>>) {
     std::thread::spawn(move || {
         let mut last_time = std::time::Instant::now();
 
@@ -19,12 +19,25 @@ pub fn start_simulation_thread(mut state_buffer: Arc<DoubleBufferUnsafe<Simulati
             let dt = now.duration_since(last_time).as_secs_f32();
             last_time = now;
 
-            let mut simulation_state = state_buffer.get_write_buffer();
-            simulation_state.update(dt);
+            {
+                let mut simulation_state = state_buffer.get_write_buffer();
+                simulation_state.update(dt);
+            }
 
+            // commit after we drop the lock
             state_buffer.commit();
         }
     });
+}
+
+struct Instance {
+    position: [f32; 3],
+}
+
+#[repr(C)]
+#[derive(Copy, Clone, bytemuck::Pod, bytemuck::Zeroable)]
+struct InstanceRaw {
+    model: [[f32; 4]; 4],
 }
 
 #[derive(Clone)]
@@ -56,7 +69,7 @@ impl SimulationState {
             .collect();
 
         let velocities = vec![[0.0, 0.0, 0.0]; particle_count as usize];
-        let masses = vec![500.0; particle_count as usize];
+        let masses = vec![100.0; particle_count as usize];
         let g = 6.67430e-11;
 
         Self {
@@ -85,8 +98,8 @@ impl SimulationState {
 
                 let d = f32::sqrt(
                     (p2_pos[0] - p1_pos[0]) * (p2_pos[0] - p1_pos[0])
-                        + (p2_pos[1] - p1_pos[1]) * (p2_pos[1] - p1_pos[1])
-                        + (p2_pos[2] - p1_pos[2]) * (p2_pos[2] - p1_pos[2]),
+                    + (p2_pos[1] - p1_pos[1]) * (p2_pos[1] - p1_pos[1])
+                    + (p2_pos[2] - p1_pos[2]) * (p2_pos[2] - p1_pos[2])
                 );
 
                 if d < 1e-5 {
@@ -98,10 +111,10 @@ impl SimulationState {
                     (p2_pos[1] - p1_pos[1]) / d,
                     (p2_pos[2] - p1_pos[2]) / d,
                 ];
-                // we combined the above equations to jump straight to acceleration
                 let acceleration_vector = unit_vector.map(|x| x * (self.g * p2_mass / (d * d)));
 
-                for i in 0..3 {
+                // add 3rd back if we do 3d
+                for i in 0..2 {
                     acceleration[i] += acceleration_vector[i];
                 }
             }
@@ -126,8 +139,10 @@ pub struct AppState {
     pub scale_factor: f32,
     pub egui_renderer: EguiRenderer,
     pub nbody_pipeline: wgpu::RenderPipeline,
+    pub uniform_buffer: wgpu::Buffer,
+    pub bind_group: wgpu::BindGroup,
     pub particle_vertex_buffer: wgpu::Buffer,
-    pub state_buffer_render: Arc<DoubleBufferUnsafe<SimulationState>>,
+    pub state_buffer_render: Arc<TripleBuffer<SimulationState>>,
 }
 
 impl AppState {
@@ -139,9 +154,7 @@ impl AppState {
         height: u32,
     ) -> Self {
         let particle_count = 1000;
-        let simulation_state = Arc::new(DoubleBufferUnsafe::new(SimulationState::new(
-            particle_count,
-        )));
+        let simulation_state = Arc::new(TripleBuffer::new(SimulationState::new(particle_count)));
         let state_buffer_sim = Arc::clone(&simulation_state);
         let state_buffer_render = Arc::clone(&simulation_state);
 
@@ -193,15 +206,28 @@ impl AppState {
         let egui_renderer = EguiRenderer::new(&device, surface_config.format, None, 1, window);
         let scale_factor = 1.0;
 
-        // viewport
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("N-Body Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("particle.wgsl").into()),
         });
 
+        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("Bind Group Layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                ty: wgpu::BindingType::Buffer {
+                    ty: wgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: wgpu::BufferSize::new(16),
+                },
+                count: None,
+            }],
+        });
+
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("Pipeline Layout"),
-            bind_group_layouts: &[],
+            bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
 
@@ -213,7 +239,8 @@ impl AppState {
                 entry_point: "vs_main",
                 compilation_options: Default::default(),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                    array_stride: (std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress)
+                        as wgpu::BufferAddress,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &wgpu::vertex_attr_array![0 => Float32x3],
                 }],
@@ -234,6 +261,27 @@ impl AppState {
             cache: None,
         });
 
+        let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Uniform Buffer"),
+            // todo: update on resize?
+            contents: bytemuck::cast_slice(&[
+                window.inner_size().width,
+                window.inner_size().height,
+                1,
+                0, //align std140
+            ]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: uniform_buffer.as_entire_binding(),
+            }],
+            label: None,
+        });
+
         // Initialize particle buffer with dummy data
         let initial_particles = vec![[0.0f32, 0.0f32, 0.0f32]; 1000];
         let particle_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -250,6 +298,8 @@ impl AppState {
             scale_factor,
             egui_renderer,
             nbody_pipeline,
+            uniform_buffer,
+            bind_group,
             particle_vertex_buffer,
             state_buffer_render,
         }
@@ -397,9 +447,13 @@ impl App {
             });
 
             render_pass.set_pipeline(&state.nbody_pipeline);
+            render_pass.set_bind_group(0, &state.bind_group, &[]);
             render_pass.set_vertex_buffer(0, state.particle_vertex_buffer.slice(..));
-            render_pass.draw(0..simulation_state.particle_count, 0..1);
+            render_pass.draw(0..simulation_state.particle_count, 0..6);
         }
+
+        // swap read once we drop the buffer
+        state.state_buffer_render.swap_read();
 
         state.queue.submit(Some(encoder.finish()));
         surface_texture.present();
@@ -438,4 +492,3 @@ impl ApplicationHandler for App {
         }
     }
 }
-

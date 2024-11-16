@@ -1,8 +1,9 @@
 use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
-pub struct TripleBuffer<T> {
-    buffers: [T; 3],
+pub struct TripleBuffer<T: Clone> {
+    buffers: [Mutex<T>; 3],
     read_index: AtomicUsize,
     write_index: AtomicUsize,
     swap_index: AtomicUsize,
@@ -11,29 +12,40 @@ pub struct TripleBuffer<T> {
 impl<T: Clone> TripleBuffer<T> {
     pub fn new(initial_state: T) -> Self {
         Self {
-            buffers: [initial_state.clone(), initial_state.clone(), initial_state],
+            buffers: [
+                Mutex::new(initial_state.clone()),
+                Mutex::new(initial_state.clone()),
+                Mutex::new(initial_state),
+            ],
             read_index: AtomicUsize::new(0),
             write_index: AtomicUsize::new(1),
             swap_index: AtomicUsize::new(2),
         }
     }
 
-    pub fn get_write_buffer(&mut self) -> &mut T {
-        &mut self.buffers[self.write_index.load(Ordering::Acquire)]
+    pub fn get_write_buffer(&self) -> std::sync::MutexGuard<T> {
+        let write_idx = self.write_index.load(Ordering::Acquire);
+        self.buffers[write_idx].lock().unwrap()
     }
 
-    pub fn swap_write(&self) {
-        let current_write = self.write_index.load(Ordering::Acquire);
-        self.swap_index.swap(current_write, Ordering::Release);
+    pub fn get_read_buffer(&self) -> std::sync::MutexGuard<T> {
+        let read_idx = self.read_index.load(Ordering::Acquire);
+        self.buffers[read_idx].lock().unwrap()
+    }
+
+    pub fn commit(&self) {
+        let write_idx = self.write_index.load(Ordering::Acquire);
+        let swap_idx = self.swap_index.load(Ordering::Acquire);
+
+        let mut write_buf = self.buffers[write_idx].lock().unwrap();
+        let mut swap_buf = self.buffers[swap_idx].lock().unwrap();
+
+        *swap_buf = write_buf.clone();
     }
 
     pub fn swap_read(&self) {
-        let current_read = self.read_index.load(Ordering::Acquire);
-        self.swap_index.swap(current_read, Ordering::Release);
-    }
-
-    pub fn get_read_buffer(&self) -> &T {
-        &self.buffers[self.read_index.load(Ordering::Acquire)]
+        let swap_idx = self.swap_index.load(Ordering::Acquire);
+        self.read_index.store(swap_idx, Ordering::Release);
     }
 }
 
@@ -74,46 +86,3 @@ pub struct DoubleBufferUnsafe<T: Clone> {
 }
 
 unsafe impl<T: Clone> Sync for DoubleBufferUnsafe<T> {}
-
-impl<T: Clone> DoubleBufferUnsafe<T> {
-    pub fn new(initial: T) -> Self
-    where
-        T: Clone,
-    {
-        Self {
-            buffers: [
-                UnsafeCell::new(initial.clone()),
-                UnsafeCell::new(initial),
-            ],
-            read_index: AtomicUsize::new(0),
-            write_index: AtomicUsize::new(1),
-        }
-    }
-
-    pub fn get_write_buffer(&self) -> &mut T {
-        let write_idx = self.write_index.load(Ordering::Acquire);
-        unsafe { &mut *self.buffers[write_idx].get() }
-    }
-
-    pub fn swap(&self) {
-        let write_idx = self.write_index.load(Ordering::Acquire);
-        let read_idx = self.read_index.swap(write_idx, Ordering::Release);
-        self.write_index.store(1 - read_idx, Ordering::Release);
-    }
-
-    pub fn commit(&self) {
-        let read_index = self.read_index.load(Ordering::Acquire);
-        let write_index = 1 - read_index;
-
-        unsafe {
-            let write_buffer = &*self.buffers[write_index].get();
-            let read_buffer = &mut *self.buffers[read_index].get();
-            *read_buffer = (*write_buffer).clone();
-        }
-    }
-
-    pub fn get_read_buffer(&self) -> &T {
-        let read_idx = self.read_index.load(Ordering::Acquire);
-        unsafe { &*self.buffers[read_idx].get() }
-    }
-}

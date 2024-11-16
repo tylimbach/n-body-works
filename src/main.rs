@@ -1,8 +1,8 @@
 use winit::event_loop::{ControlFlow, EventLoop};
 
 mod app;
-mod egui_tools;
 mod buffer_tools;
+mod egui_tools;
 
 fn main() {
     #[cfg(not(target_arch = "wasm32"))]
@@ -14,7 +14,7 @@ fn main() {
 async fn run() {
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
-    
+
     let mut app = app::App::new();
     event_loop.run_app(&mut app).expect("Failed to run app");
 }
