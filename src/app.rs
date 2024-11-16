@@ -98,8 +98,8 @@ impl SimulationState {
 
                 let d = f32::sqrt(
                     (p2_pos[0] - p1_pos[0]) * (p2_pos[0] - p1_pos[0])
-                    + (p2_pos[1] - p1_pos[1]) * (p2_pos[1] - p1_pos[1])
-                    + (p2_pos[2] - p1_pos[2]) * (p2_pos[2] - p1_pos[2])
+                        + (p2_pos[1] - p1_pos[1]) * (p2_pos[1] - p1_pos[1])
+                        + (p2_pos[2] - p1_pos[2]) * (p2_pos[2] - p1_pos[2]),
                 );
 
                 if d < 1e-5 {
@@ -141,7 +141,8 @@ pub struct AppState {
     pub nbody_pipeline: wgpu::RenderPipeline,
     pub uniform_buffer: wgpu::Buffer,
     pub bind_group: wgpu::BindGroup,
-    pub particle_vertex_buffer: wgpu::Buffer,
+    pub instance_buffer: wgpu::Buffer,
+    pub vertex_buffer: wgpu::Buffer,
     pub state_buffer_render: Arc<TripleBuffer<SimulationState>>,
 }
 
@@ -194,10 +195,10 @@ impl AppState {
             format: *surface_format,
             width,
             height,
-            present_mode: wgpu::PresentMode::AutoVsync,
+            present_mode: wgpu::PresentMode::AutoNoVsync,
             alpha_mode: swapchain_capabilities.alpha_modes[0],
             view_formats: vec![],
-            desired_maximum_frame_latency: 0,
+            desired_maximum_frame_latency: 2,
         };
 
         surface.configure(&device, &surface_config);
@@ -219,7 +220,7 @@ impl AppState {
                 ty: wgpu::BindingType::Buffer {
                     ty: wgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
-                    min_binding_size: wgpu::BufferSize::new(16),
+                    min_binding_size: wgpu::BufferSize::new(8),
                 },
                 count: None,
             }],
@@ -238,12 +239,20 @@ impl AppState {
                 module: &shader,
                 entry_point: "vs_main",
                 compilation_options: Default::default(),
-                buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: (std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress)
-                        as wgpu::BufferAddress,
-                    step_mode: wgpu::VertexStepMode::Vertex,
-                    attributes: &wgpu::vertex_attr_array![0 => Float32x3],
-                }],
+                buffers: &[
+                    wgpu::VertexBufferLayout {
+                        array_stride: (std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress)
+                            as wgpu::BufferAddress,
+                        step_mode: wgpu::VertexStepMode::Vertex,
+                        attributes: &wgpu::vertex_attr_array![0 => Float32x2],
+                    },
+                    wgpu::VertexBufferLayout {
+                        array_stride: (std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress)
+                            as wgpu::BufferAddress,
+                        step_mode: wgpu::VertexStepMode::Instance,
+                        attributes: &wgpu::vertex_attr_array![1 => Float32x3],
+                    },
+                ],
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
@@ -253,7 +262,12 @@ impl AppState {
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::PointList,
-                ..Default::default()
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: Some(wgpu::Face::Back),
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
             },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
@@ -267,8 +281,6 @@ impl AppState {
             contents: bytemuck::cast_slice(&[
                 window.inner_size().width,
                 window.inner_size().height,
-                1,
-                0, //align std140
             ]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -284,9 +296,23 @@ impl AppState {
 
         // Initialize particle buffer with dummy data
         let initial_particles = vec![[0.0f32, 0.0f32, 0.0f32]; 1000];
-        let particle_vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Particle Vertex Buffer"),
+        let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Particle Instance Buffer"),
             contents: bytemuck::cast_slice(&initial_particles),
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        });
+
+        let quad_vertices = vec![
+            [-1.0, -1.0], // Bottom-left
+            [1.0, -1.0],  // Bottom-right
+            [1.0, 1.0],   // Top-right
+            [-1.0, -1.0], // Bottom-left (reused)
+            [1.0, 1.0],   // Top-right (reused)
+            [-1.0, 1.0],  // Top-left
+        ];
+        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("Particle Vertex Buffer"),
+            contents: bytemuck::cast_slice(&quad_vertices),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
@@ -300,7 +326,8 @@ impl AppState {
             nbody_pipeline,
             uniform_buffer,
             bind_group,
-            particle_vertex_buffer,
+            instance_buffer,
+            vertex_buffer,
             state_buffer_render,
         }
     }
@@ -426,7 +453,7 @@ impl App {
             let simulation_state = state.state_buffer_render.get_read_buffer();
 
             state.queue.write_buffer(
-                &state.particle_vertex_buffer,
+                &state.instance_buffer,
                 0,
                 bytemuck::cast_slice(&simulation_state.positions),
             );
@@ -437,7 +464,12 @@ impl App {
                     view: &surface_view,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: 0.0,
+                            g: 0.0,
+                            b: 0.0,
+                            a: 1.0,
+                        }),
                         store: wgpu::StoreOp::Store,
                     },
                 })],
@@ -448,8 +480,9 @@ impl App {
 
             render_pass.set_pipeline(&state.nbody_pipeline);
             render_pass.set_bind_group(0, &state.bind_group, &[]);
-            render_pass.set_vertex_buffer(0, state.particle_vertex_buffer.slice(..));
-            render_pass.draw(0..simulation_state.particle_count, 0..6);
+            render_pass.set_vertex_buffer(0, state.vertex_buffer.slice(..));
+            render_pass.set_vertex_buffer(1, state.instance_buffer.slice(..));
+            render_pass.draw(0..6, 0..simulation_state.particle_count);
         }
 
         // swap read once we drop the buffer
