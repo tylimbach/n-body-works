@@ -1,11 +1,11 @@
-use crate::buffer_tools::{DoubleBuffer, DoubleBufferUnsafe, TripleBuffer};
+use crate::buffer_tools::TripleBuffer;
 use crate::egui_tools::EguiRenderer;
-use egui_wgpu::wgpu::util::{DeviceExt, RenderEncoder};
+use egui_wgpu::wgpu::util::DeviceExt;
 use egui_wgpu::{wgpu, ScreenDescriptor};
 use rand::Rng;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
@@ -130,22 +130,6 @@ impl SimulationState {
         }
     }
 
-    pub fn update(&mut self, dt: f32) {
-        //self.update_euler(dt);
-        self.update_leapfrog(dt);
-    }
-
-    fn update_euler(&mut self, dt: f32) {
-        self.update_acceleration();
-
-        for p1 in 0..self.particle_count as usize {
-            for i in 0..3 {
-                self.velocities[p1][i] += self.accelerations[p1][i] * dt;
-                self.positions[p1][i] += self.velocities[p1][i] * dt;
-            }
-        }
-    }
-
     fn update_acceleration(&mut self) {
         // F = (G*m1m2/(r*r)) * (unit vector)
         // F = ma
@@ -185,6 +169,24 @@ impl SimulationState {
         }
     }
 
+    pub fn update(&mut self, dt: f32) {
+        //self.update_euler(dt);
+        self.update_leapfrog(dt);
+    }
+
+    #[allow(dead_code)]
+    fn update_euler(&mut self, dt: f32) {
+        self.update_acceleration();
+
+        for p1 in 0..self.particle_count as usize {
+            for i in 0..3 {
+                self.velocities[p1][i] += self.accelerations[p1][i] * dt;
+                self.positions[p1][i] += self.velocities[p1][i] * dt;
+            }
+        }
+    }
+
+    #[allow(dead_code)]
     fn update_leapfrog(&mut self, dt: f32) {
         for p1 in 0..self.particle_count as usize {
             for i in 0..3 {
@@ -377,7 +379,7 @@ impl AppState {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
-        let quad_vertices = vec![
+        let quad_vertices = [
             [-1.0, -1.0], // Bottom-left
             [1.0, -1.0],  // Bottom-right
             [1.0, 1.0],   // Top-right
