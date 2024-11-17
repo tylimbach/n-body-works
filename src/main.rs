@@ -12,6 +12,8 @@ fn main() {
 }
 
 async fn run() {
+    env_logger::init();
+
     let event_loop = EventLoop::new().unwrap();
     event_loop.set_control_flow(ControlFlow::Poll);
 

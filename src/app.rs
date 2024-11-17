@@ -3,14 +3,19 @@ use crate::egui_tools::EguiRenderer;
 use egui_wgpu::wgpu::util::{DeviceExt, RenderEncoder};
 use egui_wgpu::{wgpu, ScreenDescriptor};
 use rand::Rng;
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::dpi::PhysicalSize;
 use winit::event::WindowEvent;
 use winit::event_loop::ActiveEventLoop;
 use winit::window::{Window, WindowId};
 
-pub fn start_simulation_thread(state_buffer: Arc<TripleBuffer<SimulationState>>) {
+pub fn start_simulation_thread(
+    state_buffer: Arc<TripleBuffer<SimulationState>>,
+    simulation_frames: Arc<Mutex<FrameQueue>>,
+) {
     std::thread::spawn(move || {
         let mut last_time = std::time::Instant::now();
 
@@ -19,15 +24,57 @@ pub fn start_simulation_thread(state_buffer: Arc<TripleBuffer<SimulationState>>)
             let dt = now.duration_since(last_time).as_secs_f32();
             last_time = now;
 
+            log::info!("Simulation update dt: {:.6} seconds", dt);
+
             {
                 let mut simulation_state = state_buffer.get_write_buffer();
-                simulation_state.update(dt);
+                simulation_state.update(0.1);
             }
 
             // commit after we drop the lock
             state_buffer.commit();
+
+            {
+                simulation_frames.lock().unwrap().record_frame();
+            }
         }
     });
+}
+
+pub struct FrameQueue {
+    frames: VecDeque<Instant>,
+    max_frames: usize,
+}
+
+impl FrameQueue {
+    pub fn new(max_frames: usize) -> Self {
+        Self {
+            frames: VecDeque::new(),
+            max_frames,
+        }
+    }
+
+    pub fn record_frame(&mut self) {
+        let timestamp = Instant::now();
+
+        self.frames.push_back(timestamp);
+
+        if self.frames.len() > self.max_frames {
+            self.frames.pop_front();
+        }
+    }
+
+    pub fn calculate_fps(&self) -> f32 {
+        if self.frames.len() < 2 {
+            return 0.0;
+        }
+
+        let first = *self.frames.front().unwrap();
+        let last = *self.frames.back().unwrap();
+        let duration = (last - first).as_secs_f32();
+
+        self.frames.len() as f32 / duration
+    }
 }
 
 #[derive(Clone)]
@@ -42,9 +89,9 @@ pub struct SimulationState {
 impl SimulationState {
     pub fn new(particle_count: u32) -> Self {
         let mut rng = rand::thread_rng();
-        let positions = (0..particle_count)
+        let positions: Vec<[f32; 3]> = (0..particle_count)
             .map(|_| {
-                let r = f32::powf(rng.gen_range(0.0..1.0), 0.2);
+                let r = f32::powf(rng.gen_range(0.0..0.9), 0.1);
                 let theta = rng.gen_range(0.0..std::f32::consts::TAU);
                 // phi stuff is for 3d
                 // let phi = rng.gen_range(0.0..std::f32::consts::PI);
@@ -58,10 +105,19 @@ impl SimulationState {
                 [x, y, z]
             })
             .collect();
+        let velocities: Vec<[f32; 3]> = positions
+            .iter()
+            .map(|[x, y, _]| {
+                let speed = rng.gen_range(0.004..0.008);
+                let magnitude = f32::sqrt(x * x + y * y);
+                let radial_unit = [x / magnitude, y / magnitude, 0.0].map(|x| x * speed);
+
+                [-radial_unit[1], radial_unit[0], 0.0]
+            })
+            .collect();
 
         let accelerations = vec![[0.0, 0.0, 0.0]; particle_count as usize];
-        let velocities = vec![[0.0, 0.0, 0.0]; particle_count as usize];
-        let masses = vec![100000.0; particle_count as usize];
+        let masses = vec![1000.0; particle_count as usize];
         let g = 6.67430e-11;
 
         Self {
@@ -75,16 +131,13 @@ impl SimulationState {
     }
 
     pub fn update(&mut self, dt: f32) {
-        self.update_acceleration();
-
-        //self.update_euler(0.1);
-        self.update_leapfrog(0.1);
+        //self.update_euler(dt);
+        self.update_leapfrog(dt);
     }
 
     fn update_euler(&mut self, dt: f32) {
-        // F = (G*m1m2/(r*r)) * (unit vector)
-        // F = ma
-        // a = G*m2/(r*r) * unit vector
+        self.update_acceleration();
+
         for p1 in 0..self.particle_count as usize {
             for i in 0..3 {
                 self.velocities[p1][i] += self.accelerations[p1][i] * dt;
@@ -94,6 +147,9 @@ impl SimulationState {
     }
 
     fn update_acceleration(&mut self) {
+        // F = (G*m1m2/(r*r)) * (unit vector)
+        // F = ma
+        // a = G*m2/(r*r) * unit vector
         let softening = 1e-4;
 
         for p1 in 0..self.particle_count as usize {
@@ -130,11 +186,17 @@ impl SimulationState {
     }
 
     fn update_leapfrog(&mut self, dt: f32) {
-        // leapfrog
         for p1 in 0..self.particle_count as usize {
             for i in 0..3 {
                 self.velocities[p1][i] += self.accelerations[p1][i] * dt * 0.5;
-                self.positions[p1][i] += self.accelerations[p1][i] * dt;
+                self.positions[p1][i] += self.velocities[p1][i] * dt;
+            }
+        }
+
+        self.update_acceleration();
+
+        for p1 in 0..self.particle_count as usize {
+            for i in 0..3 {
                 self.velocities[p1][i] += self.accelerations[p1][i] * dt * 0.5;
             }
         }
@@ -154,6 +216,8 @@ pub struct AppState {
     pub instance_buffer: wgpu::Buffer,
     pub vertex_buffer: wgpu::Buffer,
     pub state_buffer_render: Arc<TripleBuffer<SimulationState>>,
+    pub render_frames: Arc<Mutex<FrameQueue>>,
+    pub simulation_frames: Arc<Mutex<FrameQueue>>,
 }
 
 impl AppState {
@@ -164,12 +228,13 @@ impl AppState {
         width: u32,
         height: u32,
     ) -> Self {
-        let particle_count = 10000;
+        let particle_count = 1000;
         let simulation_state = Arc::new(TripleBuffer::new(SimulationState::new(particle_count)));
         let state_buffer_sim = Arc::clone(&simulation_state);
         let state_buffer_render = Arc::clone(&simulation_state);
+        let simulation_frames = Arc::new(Mutex::new(FrameQueue::new(300)));
 
-        start_simulation_thread(state_buffer_sim);
+        start_simulation_thread(state_buffer_sim, Arc::clone(&simulation_frames));
 
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -336,6 +401,8 @@ impl AppState {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
+        let render_frames = Arc::new(Mutex::new(FrameQueue::new(300)));
+
         Self {
             device,
             queue,
@@ -349,6 +416,8 @@ impl AppState {
             instance_buffer,
             vertex_buffer,
             state_buffer_render,
+            render_frames,
+            simulation_frames,
         }
     }
 
@@ -461,6 +530,16 @@ impl App {
                             state.scale_factor = (state.scale_factor + 0.1).min(3.0);
                         }
                     });
+
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if let Ok(sim_frames) = state.simulation_frames.lock() {
+                            ui.label(format!("Simulation FPS: {:.2}", sim_frames.calculate_fps()));
+                        }
+                        if let Ok(render_frames) = state.render_frames.lock() {
+                            ui.label(format!("Render FPS: {:.2}", render_frames.calculate_fps()));
+                        }
+                    });
                 });
 
             state.egui_renderer.end_frame_and_draw(
@@ -510,6 +589,10 @@ impl App {
 
         state.queue.submit(Some(encoder.finish()));
         surface_texture.present();
+
+        {
+            state.render_frames.lock().unwrap().record_frame();
+        }
     }
 }
 
