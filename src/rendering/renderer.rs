@@ -1,211 +1,13 @@
+use crate::SimulationState;
+use crate::FrameQueue;
 use crate::buffer_tools::TripleBuffer;
 use crate::egui_tools::EguiRenderer;
 use egui_wgpu::wgpu::util::DeviceExt;
 use egui_wgpu::{wgpu, ScreenDescriptor};
-use rand::Rng;
-use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
-use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalSize;
-use winit::event::WindowEvent;
-use winit::event_loop::ActiveEventLoop;
-use winit::window::{Window, WindowId};
+use winit::window::Window;
 
-pub fn start_simulation_thread(
-    state_buffer: Arc<TripleBuffer<SimulationState>>,
-    simulation_frames: Arc<Mutex<FrameQueue>>,
-) {
-    std::thread::spawn(move || {
-        let mut last_time = std::time::Instant::now();
-
-        loop {
-            let now = std::time::Instant::now();
-            let dt = now.duration_since(last_time).as_secs_f32();
-            last_time = now;
-
-            log::info!("Simulation update dt: {:.6} seconds", dt);
-
-            {
-                let mut simulation_state = state_buffer.get_write_buffer();
-                simulation_state.update(0.1);
-            }
-
-            // commit after we drop the lock
-            state_buffer.commit();
-
-            {
-                simulation_frames.lock().unwrap().record_frame();
-            }
-        }
-    });
-}
-
-pub struct FrameQueue {
-    frames: VecDeque<Instant>,
-    max_frames: usize,
-}
-
-impl FrameQueue {
-    pub fn new(max_frames: usize) -> Self {
-        Self {
-            frames: VecDeque::new(),
-            max_frames,
-        }
-    }
-
-    pub fn record_frame(&mut self) {
-        let timestamp = Instant::now();
-
-        self.frames.push_back(timestamp);
-
-        if self.frames.len() > self.max_frames {
-            self.frames.pop_front();
-        }
-    }
-
-    pub fn calculate_fps(&self) -> f32 {
-        if self.frames.len() < 2 {
-            return 0.0;
-        }
-
-        let first = *self.frames.front().unwrap();
-        let last = *self.frames.back().unwrap();
-        let duration = (last - first).as_secs_f32();
-
-        self.frames.len() as f32 / duration
-    }
-}
-
-#[derive(Clone)]
-pub struct SimulationState {
-    pub particle_count: u32,
-    pub positions: Vec<[f32; 3]>,
-    pub velocities: Vec<[f32; 3]>,
-    pub accelerations: Vec<[f32; 3]>,
-    pub masses: Vec<f32>,
-    pub g: f32,
-}
-impl SimulationState {
-    pub fn new(particle_count: u32) -> Self {
-        let mut rng = rand::thread_rng();
-        let positions: Vec<[f32; 3]> = (0..particle_count)
-            .map(|_| {
-                let r = f32::powf(rng.gen_range(0.0..0.9), 0.1);
-                let theta = rng.gen_range(0.0..std::f32::consts::TAU);
-                // phi stuff is for 3d
-                // let phi = rng.gen_range(0.0..std::f32::consts::PI);
-
-                // Convert spherical coordinates to cartesian
-                let x = r * theta.cos(); // * phi.sin();
-                let y = r * theta.sin(); // * phi.sin();
-                let z = 0.0;
-                // let z = r * phi.cos();
-
-                [x, y, z]
-            })
-            .collect();
-        let velocities: Vec<[f32; 3]> = positions
-            .iter()
-            .map(|[x, y, _]| {
-                let speed = rng.gen_range(0.004..0.008);
-                let magnitude = f32::sqrt(x * x + y * y);
-                let radial_unit = [x / magnitude, y / magnitude, 0.0].map(|x| x * speed);
-
-                [-radial_unit[1], radial_unit[0], 0.0]
-            })
-            .collect();
-
-        let accelerations = vec![[0.0, 0.0, 0.0]; particle_count as usize];
-        let masses = vec![1000.0; particle_count as usize];
-        let g = 6.67430e-11;
-
-        Self {
-            particle_count,
-            positions,
-            velocities,
-            accelerations,
-            masses,
-            g,
-        }
-    }
-
-    fn update_acceleration(&mut self) {
-        // F = (G*m1m2/(r*r)) * (unit vector)
-        // F = ma
-        // a = G*m2/(r*r) * unit vector
-        let softening = 1e-4;
-
-        for p1 in 0..self.particle_count as usize {
-            let mut acceleration = [0.0, 0.0, 0.0];
-            let p1_pos = self.positions[p1];
-
-            for p2 in 0..self.particle_count as usize {
-                if p1 == p2 {
-                    continue;
-                }
-
-                let p2_pos = self.positions[p2];
-                let p2_mass = self.masses[p2];
-
-                let dx = p2_pos[0] - p1_pos[0];
-                let dy = p2_pos[1] - p1_pos[1];
-                let dz = p2_pos[2] - p1_pos[2];
-                let dist_sqr = dx * dx + dy * dy + dz * dz + softening;
-
-                let inv_dist = 1.0 / f32::sqrt(dist_sqr);
-                let inv_dist3 = inv_dist * inv_dist * inv_dist;
-
-                let force = self.g * p2_mass * inv_dist3;
-
-                acceleration[0] += force * dx;
-                acceleration[1] += force * dy;
-                acceleration[2] += force * dz;
-            }
-
-            self.accelerations[p1][0] = acceleration[0];
-            self.accelerations[p1][1] = acceleration[1];
-            self.accelerations[p1][2] = acceleration[2];
-        }
-    }
-
-    pub fn update(&mut self, dt: f32) {
-        //self.update_euler(dt);
-        self.update_leapfrog(dt);
-    }
-
-    #[allow(dead_code)]
-    fn update_euler(&mut self, dt: f32) {
-        self.update_acceleration();
-
-        for p1 in 0..self.particle_count as usize {
-            for i in 0..3 {
-                self.velocities[p1][i] += self.accelerations[p1][i] * dt;
-                self.positions[p1][i] += self.velocities[p1][i] * dt;
-            }
-        }
-    }
-
-    #[allow(dead_code)]
-    fn update_leapfrog(&mut self, dt: f32) {
-        for p1 in 0..self.particle_count as usize {
-            for i in 0..3 {
-                self.velocities[p1][i] += self.accelerations[p1][i] * dt * 0.5;
-                self.positions[p1][i] += self.velocities[p1][i] * dt;
-            }
-        }
-
-        self.update_acceleration();
-
-        for p1 in 0..self.particle_count as usize {
-            for i in 0..3 {
-                self.velocities[p1][i] += self.accelerations[p1][i] * dt * 0.5;
-            }
-        }
-    }
-}
-
-pub struct AppState {
+pub struct RendererState {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub surface_config: wgpu::SurfaceConfiguration,
@@ -217,27 +19,18 @@ pub struct AppState {
     pub bind_group: wgpu::BindGroup,
     pub instance_buffer: wgpu::Buffer,
     pub vertex_buffer: wgpu::Buffer,
-    pub state_buffer_render: Arc<TripleBuffer<SimulationState>>,
     pub render_frames: Arc<Mutex<FrameQueue>>,
-    pub simulation_frames: Arc<Mutex<FrameQueue>>,
 }
 
-impl AppState {
+impl RendererState {
     pub async fn new(
         instance: &wgpu::Instance,
         surface: wgpu::Surface<'static>,
         window: &Window,
         width: u32,
         height: u32,
+        render_frames: Arc<Mutex<FrameQueue>>,
     ) -> Self {
-        let particle_count = 1000;
-        let simulation_state = Arc::new(TripleBuffer::new(SimulationState::new(particle_count)));
-        let state_buffer_sim = Arc::clone(&simulation_state);
-        let state_buffer_render = Arc::clone(&simulation_state);
-        let simulation_frames = Arc::new(Mutex::new(FrameQueue::new(300)));
-
-        start_simulation_thread(state_buffer_sim, Arc::clone(&simulation_frames));
-
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -419,68 +212,10 @@ impl AppState {
             vertex_buffer,
             state_buffer_render,
             render_frames,
-            simulation_frames,
         }
     }
 
-    pub fn resize_surface(&mut self, width: u32, height: u32) {
-        self.queue.write_buffer(
-            &self.uniform_buffer,
-            0,
-            bytemuck::cast_slice(&[width as f32, height as f32]),
-        );
-        self.surface_config.width = width;
-        self.surface_config.height = height;
-        self.surface.configure(&self.device, &self.surface_config);
-    }
-}
-
-pub struct App {
-    instance: wgpu::Instance,
-    state: Option<AppState>,
-    window: Option<Arc<Window>>,
-}
-
-impl App {
-    pub fn new() -> Self {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
-        Self {
-            instance,
-            state: None,
-            window: None,
-        }
-    }
-
-    async fn set_window(&mut self, window: Window) {
-        let window = Arc::new(window);
-        let initial_width = 1360;
-        let initial_height = 768;
-
-        let _ = window.request_inner_size(PhysicalSize::new(initial_width, initial_height));
-
-        let surface = self
-            .instance
-            .create_surface(window.clone())
-            .expect("Failed to create surface!");
-
-        let state = AppState::new(
-            &self.instance,
-            surface,
-            &window,
-            initial_width,
-            initial_width,
-        )
-        .await;
-
-        self.window.get_or_insert(window);
-        self.state.get_or_insert(state);
-    }
-
-    fn handle_resized(&mut self, width: u32, height: u32) {
-        self.state.as_mut().unwrap().resize_surface(width, height);
-    }
-
-    fn handle_redraw(&mut self) {
+    pub fn render(&mut self, simulation_state: &mut SimulationState) {
         let state = self.state.as_mut().unwrap();
 
         let screen_descriptor = ScreenDescriptor {
@@ -594,39 +329,6 @@ impl App {
 
         {
             state.render_frames.lock().unwrap().record_frame();
-        }
-    }
-}
-
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window = event_loop
-            .create_window(Window::default_attributes())
-            .unwrap();
-        pollster::block_on(self.set_window(window));
-    }
-
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
-        self.state
-            .as_mut()
-            .unwrap()
-            .egui_renderer
-            .handle_input(self.window.as_ref().unwrap(), &event);
-
-        match event {
-            WindowEvent::CloseRequested => {
-                println!("The close button was pressed; stopping");
-                event_loop.exit();
-            }
-            WindowEvent::RedrawRequested => {
-                self.handle_redraw();
-
-                self.window.as_ref().unwrap().request_redraw();
-            }
-            WindowEvent::Resized(new_size) => {
-                self.handle_resized(new_size.width, new_size.height);
-            }
-            _ => (),
         }
     }
 }
