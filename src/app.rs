@@ -35,6 +35,7 @@ pub struct SimulationState {
     pub particle_count: u32,
     pub positions: Vec<[f32; 3]>,
     pub velocities: Vec<[f32; 3]>,
+    pub accelerations: Vec<[f32; 3]>,
     pub masses: Vec<f32>,
     pub g: f32,
 }
@@ -58,6 +59,7 @@ impl SimulationState {
             })
             .collect();
 
+        let accelerations = vec![[0.0, 0.0, 0.0]; particle_count as usize];
         let velocities = vec![[0.0, 0.0, 0.0]; particle_count as usize];
         let masses = vec![100000.0; particle_count as usize];
         let g = 6.67430e-11;
@@ -66,56 +68,74 @@ impl SimulationState {
             particle_count,
             positions,
             velocities,
+            accelerations,
             masses,
             g,
         }
     }
 
     pub fn update(&mut self, dt: f32) {
+        self.update_acceleration();
+
+        //self.update_euler(0.1);
+        self.update_leapfrog(0.1);
+    }
+
+    fn update_euler(&mut self, dt: f32) {
         // F = (G*m1m2/(r*r)) * (unit vector)
         // F = ma
         // a = G*m2/(r*r) * unit vector
         for p1 in 0..self.particle_count as usize {
+            for i in 0..3 {
+                self.velocities[p1][i] += self.accelerations[p1][i] * dt;
+                self.positions[p1][i] += self.velocities[p1][i] * dt;
+            }
+        }
+    }
+
+    fn update_acceleration(&mut self) {
+        let softening = 1e-4;
+
+        for p1 in 0..self.particle_count as usize {
             let mut acceleration = [0.0, 0.0, 0.0];
             let p1_pos = self.positions[p1];
-            // calculate forces
+
             for p2 in 0..self.particle_count as usize {
                 if p1 == p2 {
                     continue;
                 }
+
                 let p2_pos = self.positions[p2];
                 let p2_mass = self.masses[p2];
 
-                let d = f32::sqrt(
-                    (p2_pos[0] - p1_pos[0]) * (p2_pos[0] - p1_pos[0])
-                        + (p2_pos[1] - p1_pos[1]) * (p2_pos[1] - p1_pos[1])
-                        + (p2_pos[2] - p1_pos[2]) * (p2_pos[2] - p1_pos[2]),
-                );
+                let dx = p2_pos[0] - p1_pos[0];
+                let dy = p2_pos[1] - p1_pos[1];
+                let dz = p2_pos[2] - p1_pos[2];
+                let dist_sqr = dx * dx + dy * dy + dz * dz + softening;
 
-                if d < 1e-5 {
-                    continue;
-                }
+                let inv_dist = 1.0 / f32::sqrt(dist_sqr);
+                let inv_dist3 = inv_dist * inv_dist * inv_dist;
 
-                let unit_vector = [
-                    (p2_pos[0] - p1_pos[0]) / d,
-                    (p2_pos[1] - p1_pos[1]) / d,
-                    (p2_pos[2] - p1_pos[2]) / d,
-                ];
-                let acceleration_vector = unit_vector.map(|x| x * (self.g * p2_mass / (d * d)));
+                let force = self.g * p2_mass * inv_dist3;
 
-                // add 3rd back if we do 3d
-                for i in 0..2 {
-                    acceleration[i] += acceleration_vector[i];
-                }
+                acceleration[0] += force * dx;
+                acceleration[1] += force * dy;
+                acceleration[2] += force * dz;
             }
 
-            // euler method
-            for (vel, (pos, &acc)) in self.velocities[p1]
-                .iter_mut()
-                .zip(self.positions[p1].iter_mut().zip(acceleration.iter()))
-            {
-                *vel += acc * dt;
-                *pos += *vel * dt;
+            self.accelerations[p1][0] = acceleration[0];
+            self.accelerations[p1][1] = acceleration[1];
+            self.accelerations[p1][2] = acceleration[2];
+        }
+    }
+
+    fn update_leapfrog(&mut self, dt: f32) {
+        // leapfrog
+        for p1 in 0..self.particle_count as usize {
+            for i in 0..3 {
+                self.velocities[p1][i] += self.accelerations[p1][i] * dt * 0.5;
+                self.positions[p1][i] += self.accelerations[p1][i] * dt;
+                self.velocities[p1][i] += self.accelerations[p1][i] * dt * 0.5;
             }
         }
     }
@@ -144,7 +164,7 @@ impl AppState {
         width: u32,
         height: u32,
     ) -> Self {
-        let particle_count = 100;
+        let particle_count = 10000;
         let simulation_state = Arc::new(TripleBuffer::new(SimulationState::new(particle_count)));
         let state_buffer_sim = Arc::clone(&simulation_state);
         let state_buffer_render = Arc::clone(&simulation_state);
@@ -285,7 +305,7 @@ impl AppState {
         });
 
         // Initialize particle buffer with dummy data
-        let initial_particles = vec![[0.0f32, 0.0f32, 0.0f32]; 1000];
+        let initial_particles = vec![[0.0f32, 0.0f32, 0.0f32]; 10000];
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Particle Instance Buffer"),
             contents: bytemuck::cast_slice(&initial_particles),
