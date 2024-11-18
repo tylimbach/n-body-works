@@ -2,7 +2,10 @@ use winit::event_loop::{ControlFlow, EventLoop};
 
 mod app;
 mod buffer_tools;
+mod diagnostic;
 mod egui_tools;
+mod renderer;
+mod simulation;
 
 fn main() {
     #[cfg(not(target_arch = "wasm32"))]

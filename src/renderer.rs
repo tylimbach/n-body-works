@@ -1,13 +1,12 @@
-use crate::SimulationState;
-use crate::FrameQueue;
-use crate::buffer_tools::TripleBuffer;
+use crate::diagnostic::FrameQueue;
 use crate::egui_tools::EguiRenderer;
-use egui_wgpu::wgpu::util::DeviceExt;
+use crate::simulation::SimulationState;
 use egui_wgpu::{wgpu, ScreenDescriptor};
 use std::sync::{Arc, Mutex};
+use wgpu::util::DeviceExt;
 use winit::window::Window;
 
-pub struct RendererState {
+pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     pub surface_config: wgpu::SurfaceConfiguration,
@@ -22,14 +21,13 @@ pub struct RendererState {
     pub render_frames: Arc<Mutex<FrameQueue>>,
 }
 
-impl RendererState {
+impl Renderer {
     pub async fn new(
         instance: &wgpu::Instance,
         surface: wgpu::Surface<'static>,
         window: &Window,
         width: u32,
         height: u32,
-        render_frames: Arc<Mutex<FrameQueue>>,
     ) -> Self {
         let adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
@@ -210,21 +208,17 @@ impl RendererState {
             bind_group,
             instance_buffer,
             vertex_buffer,
-            state_buffer_render,
             render_frames,
         }
     }
 
-    pub fn render(&mut self, simulation_state: &mut SimulationState) {
-        let state = self.state.as_mut().unwrap();
-
+    pub fn render(&mut self, window: &Window, simulation_state: &SimulationState) {
         let screen_descriptor = ScreenDescriptor {
-            size_in_pixels: [state.surface_config.width, state.surface_config.height],
-            pixels_per_point: self.window.as_ref().unwrap().scale_factor() as f32
-                * state.scale_factor,
+            size_in_pixels: [self.surface_config.width, self.surface_config.height],
+            pixels_per_point: window.scale_factor() as f32 * self.scale_factor,
         };
 
-        let surface_texture = state
+        let surface_texture = self
             .surface
             .get_current_texture()
             .expect("Failed to acquire next swap chain texture");
@@ -233,21 +227,20 @@ impl RendererState {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let mut encoder = state
+        let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        let window = self.window.as_ref().unwrap();
 
         // egui pass
         {
-            state.egui_renderer.begin_frame(window);
+            self.egui_renderer.begin_frame(&window);
 
             egui::Window::new("winit + egui + wgpu says hello!")
                 .resizable(true)
                 .vscroll(true)
                 .default_open(false)
-                .show(state.egui_renderer.context(), |ui| {
+                .show(self.egui_renderer.context(), |ui| {
                     ui.label("Label!");
 
                     if ui.button("Button!").clicked() {
@@ -258,32 +251,34 @@ impl RendererState {
                     ui.horizontal(|ui| {
                         ui.label(format!(
                             "Pixels per point: {}",
-                            state.egui_renderer.context().pixels_per_point()
+                            self.egui_renderer.context().pixels_per_point()
                         ));
                         if ui.button("-").clicked() {
-                            state.scale_factor = (state.scale_factor - 0.1).max(0.3);
+                            self.scale_factor = (self.scale_factor - 0.1).max(0.3);
                         }
                         if ui.button("+").clicked() {
-                            state.scale_factor = (state.scale_factor + 0.1).min(3.0);
+                            self.scale_factor = (self.scale_factor + 0.1).min(3.0);
                         }
                     });
 
                     ui.separator();
                     ui.horizontal(|ui| {
-                        if let Ok(sim_frames) = state.simulation_frames.lock() {
+                        /*
+                        if let Ok(sim_frames) = simulation_frames.lock() {
                             ui.label(format!("Simulation FPS: {:.2}", sim_frames.calculate_fps()));
                         }
-                        if let Ok(render_frames) = state.render_frames.lock() {
+                        */
+                        if let Ok(render_frames) = self.render_frames.lock() {
                             ui.label(format!("Render FPS: {:.2}", render_frames.calculate_fps()));
                         }
                     });
                 });
 
-            state.egui_renderer.end_frame_and_draw(
-                &state.device,
-                &state.queue,
+            self.egui_renderer.end_frame_and_draw(
+                &self.device,
+                &self.queue,
                 &mut encoder,
-                window,
+                &window,
                 &surface_view,
                 screen_descriptor,
             );
@@ -291,8 +286,6 @@ impl RendererState {
 
         // nbody pass
         {
-            let simulation_state = state.state_buffer_render.get_read_buffer();
-
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("NBody Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -308,27 +301,35 @@ impl RendererState {
                 occlusion_query_set: None,
             });
 
-            state.queue.write_buffer(
-                &state.instance_buffer,
+            self.queue.write_buffer(
+                &self.instance_buffer,
                 0,
                 bytemuck::cast_slice(&simulation_state.positions),
             );
 
-            render_pass.set_pipeline(&state.nbody_pipeline);
-            render_pass.set_bind_group(0, &state.bind_group, &[]);
-            render_pass.set_vertex_buffer(0, state.vertex_buffer.slice(..));
-            render_pass.set_vertex_buffer(1, state.instance_buffer.slice(..));
+            render_pass.set_pipeline(&self.nbody_pipeline);
+            render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             render_pass.draw(0..6, 0..simulation_state.particle_count);
         }
 
-        // swap read once we drop the buffer
-        state.state_buffer_render.swap_read();
-
-        state.queue.submit(Some(encoder.finish()));
+        self.queue.submit(Some(encoder.finish()));
         surface_texture.present();
 
         {
-            state.render_frames.lock().unwrap().record_frame();
+            self.render_frames.lock().unwrap().record_frame();
         }
+    }
+
+    pub fn resize_surface(&mut self, width: u32, height: u32) {
+        self.queue.write_buffer(
+            &self.uniform_buffer,
+            0,
+            bytemuck::cast_slice(&[width as f32, height as f32]),
+        );
+        self.surface_config.width = width;
+        self.surface_config.height = height;
+        self.surface.configure(&self.device, &self.surface_config);
     }
 }

@@ -1,3 +1,6 @@
+use std::collections::VecDeque;
+use std::time::Instant;
+
 pub struct FrameQueue {
     frames: VecDeque<Instant>,
     max_frames: usize,
@@ -31,5 +34,9 @@ impl FrameQueue {
         let duration = (last - first).as_secs_f32();
 
         self.frames.len() as f32 / duration
+    }
+    
+    pub fn get_last_frame(&self) -> Option<Instant> {
+        self.frames.back().cloned()
     }
 }
