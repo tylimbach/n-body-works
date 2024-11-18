@@ -1,16 +1,16 @@
+use crate::diagnostic::FrameQueue;
+use crate::renderer::Renderer;
+use crate::simulation::SimulationState;
+use egui_wgpu::wgpu;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
+use winit::dpi::PhysicalSize;
 use winit::{
     application::ApplicationHandler,
     event::WindowEvent,
     event_loop::ActiveEventLoop,
     window::{Window, WindowId},
 };
-use egui_wgpu::wgpu;
-use winit::dpi::PhysicalSize;
-use crate::renderer::Renderer;
-use crate::simulation::SimulationState;
-use crate::diagnostic::FrameQueue;
 
 pub struct App {
     instance: wgpu::Instance,
@@ -36,7 +36,7 @@ impl App {
     async fn set_window(&mut self, window: Window) {
         let window = Arc::new(window);
         let initial_width = 1360;
-        let initial_height = 768;
+        let initial_height = 1360;
 
         let _ = window.request_inner_size(PhysicalSize::new(initial_width, initial_height));
 
@@ -52,7 +52,7 @@ impl App {
             initial_width,
             initial_width,
         )
-        .await;
+            .await;
 
         self.window.get_or_insert(window);
         self.renderer.get_or_insert(renderer);
@@ -69,10 +69,10 @@ impl App {
 
         let time_step = 0.1;
         self.simulation.lock().unwrap().update(time_step);
-        
+
         self.renderer.as_mut().unwrap().render(
-            self.window.as_ref().unwrap(), 
-            &self.simulation.lock().unwrap()
+            self.window.as_ref().unwrap(),
+            &self.simulation.lock().unwrap(),
         );
     }
 }

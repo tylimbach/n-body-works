@@ -13,7 +13,7 @@ pub struct SimulationState {
 impl SimulationState {
     pub fn new(particle_count: u32) -> Self {
         let mut rng = rand::thread_rng();
-        let positions : Vec<[f32; 3]> = (0..particle_count)
+        let positions: Vec<[f32; 3]> = (0..particle_count)
             .map(|_| {
                 let r = f32::powf(rng.gen_range(0.0..0.9), 0.1);
                 let theta = rng.gen_range(0.0..std::f32::consts::TAU);

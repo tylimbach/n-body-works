@@ -13,7 +13,7 @@ pub struct Renderer {
     pub surface: wgpu::Surface<'static>,
     pub scale_factor: f32,
     pub egui_renderer: EguiRenderer,
-    pub nbody_pipeline: wgpu::RenderPipeline,
+    pub pipeline: wgpu::RenderPipeline,
     pub uniform_buffer: wgpu::Buffer,
     pub bind_group: wgpu::BindGroup,
     pub instance_buffer: wgpu::Buffer,
@@ -100,7 +100,7 @@ impl Renderer {
             push_constant_ranges: &[],
         });
 
-        let nbody_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("NBody Pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -178,15 +178,15 @@ impl Renderer {
             [1.0, 1.0],   // Top-right (reused)
             [-1.0, 1.0],  // Top-left
         ]
-        .iter()
-        .map(|x| {
-            x.iter()
-                .map(|x| x * 0.01)
-                .collect::<Vec<f32>>()
-                .try_into()
-                .unwrap()
-        })
-        .collect::<Vec<[f32; 2]>>();
+            .iter()
+            .map(|x| {
+                x.iter()
+                    .map(|x| x * 0.01)
+                    .collect::<Vec<f32>>()
+                    .try_into()
+                    .unwrap()
+            })
+            .collect::<Vec<[f32; 2]>>();
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Particle Vertex Buffer"),
@@ -203,7 +203,7 @@ impl Renderer {
             surface,
             scale_factor,
             egui_renderer,
-            nbody_pipeline,
+            pipeline,
             uniform_buffer,
             bind_group,
             instance_buffer,
@@ -230,7 +230,6 @@ impl Renderer {
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
-
 
         // egui pass
         {
@@ -307,7 +306,7 @@ impl Renderer {
                 bytemuck::cast_slice(&simulation_state.positions),
             );
 
-            render_pass.set_pipeline(&self.nbody_pipeline);
+            render_pass.set_pipeline(&self.pipeline);
             render_pass.set_bind_group(0, &self.bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));

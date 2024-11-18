@@ -35,7 +35,7 @@ impl FrameQueue {
 
         self.frames.len() as f32 / duration
     }
-    
+
     pub fn get_last_frame(&self) -> Option<Instant> {
         self.frames.back().cloned()
     }
