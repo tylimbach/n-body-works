@@ -24,7 +24,7 @@ impl SimulationState {
         let velocities = positions
             .iter()
             .map(|[x, y, _]| {
-                let speed = rng.gen_range(0.004..0.008);
+                let speed = rng.gen_range(0.002..0.004);
                 let magnitude = f32::sqrt(x * x + y * y);
                 [-y / magnitude * speed, x / magnitude * speed, 0.0]
             })

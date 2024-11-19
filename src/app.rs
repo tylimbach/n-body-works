@@ -23,13 +23,13 @@ pub struct App {
 impl App {
     pub fn new() -> Self {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
-        let simulation = Arc::new(Mutex::new(SimulationState::new(100)));
+        let simulation = Arc::new(Mutex::new(SimulationState::new(3000)));
         Self {
             instance,
             window: None,
             renderer: None,
             simulation,
-            frame_queue: FrameQueue::new(60),
+            frame_queue: FrameQueue::new(120),
         }
     }
 
