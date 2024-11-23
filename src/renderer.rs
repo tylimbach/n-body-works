@@ -6,6 +6,11 @@ use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
+pub enum RenderMode {
+    Default,
+    Trail,
+}
+
 pub struct Renderer {
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
@@ -19,6 +24,8 @@ pub struct Renderer {
     pub instance_buffer: wgpu::Buffer,
     pub vertex_buffer: wgpu::Buffer,
     pub render_frames: Arc<Mutex<FrameQueue>>,
+    pub render_texture_a: wgpu::TextureView,
+    pub render_texture_b: wgpu::TextureView,
 }
 
 impl Renderer {
@@ -178,21 +185,43 @@ impl Renderer {
             [1.0, 1.0],   // Top-right (reused)
             [-1.0, 1.0],  // Top-left
         ]
-            .iter()
-            .map(|x| {
-                x.iter()
-                    .map(|x| x * 0.01)
-                    .collect::<Vec<f32>>()
-                    .try_into()
-                    .unwrap()
-            })
-            .collect::<Vec<[f32; 2]>>();
+        .iter()
+        .map(|x| {
+            x.iter()
+                .map(|x| x * 0.01)
+                .collect::<Vec<f32>>()
+                .try_into()
+                .unwrap()
+        })
+        .collect::<Vec<[f32; 2]>>();
 
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Particle Vertex Buffer"),
             contents: bytemuck::cast_slice(&quad_vertices),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
+
+        let texture_desc = wgpu::TextureDescriptor {
+            label: Some("Render Texture"),
+            size: wgpu::Extent3d {
+                width: surface_config.width,
+                height: surface_config.height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: surface_config.format,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        };
+
+        let render_texture_a = device
+            .create_texture(&texture_desc)
+            .create_view(&Default::default());
+        let render_texture_b = device
+            .create_texture(&texture_desc)
+            .create_view(&Default::default());
 
         let render_frames = Arc::new(Mutex::new(FrameQueue::new(300)));
 
@@ -209,6 +238,8 @@ impl Renderer {
             instance_buffer,
             vertex_buffer,
             render_frames,
+            render_texture_a,
+            render_texture_b,
         }
     }
 
@@ -233,7 +264,7 @@ impl Renderer {
 
         // egui pass
         {
-            self.egui_renderer.begin_frame(&window);
+            self.egui_renderer.begin_frame(window);
 
             egui::Window::new("winit + egui + wgpu says hello!")
                 .resizable(true)
@@ -277,11 +308,14 @@ impl Renderer {
                 &self.device,
                 &self.queue,
                 &mut encoder,
-                &window,
+                window,
                 &surface_view,
                 screen_descriptor,
             );
         }
+
+        // trail pass
+        {}
 
         // nbody pass
         {
