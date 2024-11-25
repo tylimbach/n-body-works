@@ -1,7 +1,10 @@
 use crate::diagnostic::FrameQueue;
 use crate::egui_tools::EguiRenderer;
 use crate::simulation::SimulationState;
-use egui_wgpu::{wgpu, ScreenDescriptor};
+use egui_wgpu::{
+    wgpu::{self, util::RenderEncoder},
+    ScreenDescriptor,
+};
 use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
@@ -20,7 +23,6 @@ pub struct Renderer {
     pub egui_renderer: EguiRenderer,
     pub pipeline: wgpu::RenderPipeline,
     pub uniform_buffer: wgpu::Buffer,
-    pub bind_group: wgpu::BindGroup,
     pub instance_buffer: wgpu::Buffer,
     pub vertex_buffer: wgpu::Buffer,
     pub render_frames: Arc<Mutex<FrameQueue>>,
@@ -29,6 +31,7 @@ pub struct Renderer {
     pub use_target_a: bool,
     pub bind_group_layout: wgpu::BindGroupLayout,
     pub sampler: wgpu::Sampler,
+    pub screen_pipeline: wgpu::RenderPipeline,
 }
 
 impl Renderer {
@@ -247,23 +250,52 @@ impl Renderer {
             border_color: None,
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Blend Bind Group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(&render_texture_a),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: uniform_buffer.as_entire_binding(),
-                },
-            ],
+        let screen_shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Fullscreen Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shader/fullscreen_texture.wgsl").into()),
+        });
+
+        let screen_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("Screen Pipeline Layout"),
+                bind_group_layouts: &[&bind_group_layout],
+                push_constant_ranges: &[],
+            });
+
+        let screen_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Screen Render Pipeline"),
+            layout: Some(&screen_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &screen_shader_module,
+                entry_point: "vs_main",
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &screen_shader_module,
+                entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_config.format,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState {
+                count: 1,
+                mask: !0,
+                alpha_to_coverage_enabled: false,
+            },
+            multiview: None,
+            cache: None,
         });
 
         let render_frames = Arc::new(Mutex::new(FrameQueue::new(300)));
@@ -277,7 +309,6 @@ impl Renderer {
             egui_renderer,
             pipeline,
             uniform_buffer,
-            bind_group,
             instance_buffer,
             vertex_buffer,
             render_frames,
@@ -286,6 +317,7 @@ impl Renderer {
             use_target_a,
             bind_group_layout,
             sampler,
+            screen_pipeline,
         }
     }
 
@@ -373,31 +405,59 @@ impl Renderer {
             &self.render_texture_a
         };
 
-        let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("Blend Bind Group"),
-            layout: &self.bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::TextureView(source_texture),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: self.uniform_buffer.as_entire_binding(),
-                },
-            ],
-        });
-
-        {}
-
-        // nbody pass
+        // nbody to texture pass
         {
             let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("NBody Render Pass"),
+                label: Some("Ping Pong Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target_texture,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+
+            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Blend Bind Group"),
+                layout: &self.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(source_texture),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.uniform_buffer.as_entire_binding(),
+                    },
+                ],
+            });
+
+            self.queue.write_buffer(
+                &self.instance_buffer,
+                0,
+                bytemuck::cast_slice(&simulation_state.positions),
+            );
+
+            render_pass.set_pipeline(&self.pipeline);
+            render_pass.set_bind_group(0, &bind_group, &[]);
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+            render_pass.draw(0..6, 0..simulation_state.particle_count);
+        }
+
+        // texture to screen pass
+        {
+            let mut screen_render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Screen Render Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &surface_view,
                     resolve_target: None,
@@ -411,18 +471,31 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            self.queue.write_buffer(
-                &self.instance_buffer,
-                0,
-                bytemuck::cast_slice(&simulation_state.positions),
-            );
+            let screen_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("Screen Bind Group"),
+                layout: &self.bind_group_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(target_texture),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: self.uniform_buffer.as_entire_binding(),
+                    },
+                ],
+            });
 
-            render_pass.set_pipeline(&self.pipeline);
-            render_pass.set_bind_group(0, &self.bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-            render_pass.draw(0..6, 0..simulation_state.particle_count);
+            screen_render_pass.set_pipeline(&self.screen_pipeline);
+            screen_render_pass.set_bind_group(0, &screen_bind_group, &[]);
+            screen_render_pass.draw(0..6, 0..1);
         }
+
+        self.use_target_a = !self.use_target_a;
 
         self.queue.submit(Some(encoder.finish()));
         surface_texture.present();
