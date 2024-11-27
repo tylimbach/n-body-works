@@ -9,13 +9,9 @@ struct VSInput {
     @location(1) position: vec3<f32>,
 }
 
-struct GlobalUniforms {
-    resolution: vec2<f32>,
-};
-
 @group(0) @binding(0) var prev_frame: texture_2d<f32>;
 @group(0) @binding(1) var prev_sampler: sampler;
-@group(0) @binding(2) var<uniform> global: GlobalUniforms;
+@group(0) @binding(2) var<uniform> resolution: vec2<f32>;
 
 @vertex
 fn vs_main(in: VSInput) -> VSOutput {
@@ -25,7 +21,7 @@ fn vs_main(in: VSInput) -> VSOutput {
     let final_pos = in.position.xy + in.vert * scale;
 
     out.frag_coord = vec4(final_pos, 0.0, 1.0);
-    out.quad_position = in.position.xy;
+    out.quad_position = in.vert;
     out.color = in.position * 0.5 + 0.5;
 
     return out;
@@ -40,7 +36,7 @@ fn fs_main(in: VSOutput) -> @location(0) vec4<f32> {
     let prev_color = textureSample(prev_frame, prev_sampler, uv);
 
     // Fade the previous frame (reduce alpha)
-    let faded_color = vec4(prev_color.rgb, prev_color.a * 0.9);
+    let faded_color = vec4(prev_color.rgb, prev_color.a * 0.95);
 
     // Compute the distance from the center of the particle
     let dist = length(in.quad_position);

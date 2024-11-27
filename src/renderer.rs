@@ -90,7 +90,9 @@ impl Renderer {
 
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("N-Body Shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader/particle.wgsl").into()),
+            source: wgpu::ShaderSource::Wgsl(
+                include_str!("shader/particle_with_blend.wgsl").into(),
+            ),
         });
 
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
