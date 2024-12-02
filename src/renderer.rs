@@ -342,57 +342,6 @@ impl Renderer {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-        // egui pass
-        {
-            self.egui_renderer.begin_frame(window);
-
-            egui::Window::new("winit + egui + wgpu says hello!")
-                .resizable(true)
-                .vscroll(true)
-                .default_open(false)
-                .show(self.egui_renderer.context(), |ui| {
-                    ui.label("Label!");
-
-                    if ui.button("Button!").clicked() {
-                        println!("boom!")
-                    }
-
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.label(format!(
-                            "Pixels per point: {}",
-                            self.egui_renderer.context().pixels_per_point()
-                        ));
-                        if ui.button("-").clicked() {
-                            self.scale_factor = (self.scale_factor - 0.1).max(0.3);
-                        }
-                        if ui.button("+").clicked() {
-                            self.scale_factor = (self.scale_factor + 0.1).min(3.0);
-                        }
-                    });
-
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        /*
-                        if let Ok(sim_frames) = simulation_frames.lock() {
-                            ui.label(format!("Simulation FPS: {:.2}", sim_frames.calculate_fps()));
-                        }
-                        */
-                        if let Ok(render_frames) = self.render_frames.lock() {
-                            ui.label(format!("Render FPS: {:.2}", render_frames.calculate_fps()));
-                        }
-                    });
-                });
-
-            self.egui_renderer.end_frame_and_draw(
-                &self.device,
-                &self.queue,
-                &mut encoder,
-                window,
-                &surface_view,
-                screen_descriptor,
-            );
-        }
 
         // trail pass
         let target_texture = if self.use_target_a {
@@ -498,6 +447,58 @@ impl Renderer {
         }
 
         self.use_target_a = !self.use_target_a;
+
+        // egui pass
+        {
+            self.egui_renderer.begin_frame(window);
+
+            egui::Window::new("winit + egui + wgpu says hello!")
+                .resizable(true)
+                .vscroll(true)
+                .default_open(false)
+                .show(self.egui_renderer.context(), |ui| {
+                    ui.label("Label!");
+
+                    if ui.button("Button!").clicked() {
+                        println!("boom!")
+                    }
+
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        ui.label(format!(
+                            "Pixels per point: {}",
+                            self.egui_renderer.context().pixels_per_point()
+                        ));
+                        if ui.button("-").clicked() {
+                            self.scale_factor = (self.scale_factor - 0.1).max(0.3);
+                        }
+                        if ui.button("+").clicked() {
+                            self.scale_factor = (self.scale_factor + 0.1).min(3.0);
+                        }
+                    });
+
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        /*
+                        if let Ok(sim_frames) = simulation_frames.lock() {
+                            ui.label(format!("Simulation FPS: {:.2}", sim_frames.calculate_fps()));
+                        }
+                        */
+                        if let Ok(render_frames) = self.render_frames.lock() {
+                            ui.label(format!("Render FPS: {:.2}", render_frames.calculate_fps()));
+                        }
+                    });
+                });
+
+            self.egui_renderer.end_frame_and_draw(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                window,
+                &surface_view,
+                screen_descriptor,
+            );
+        }
 
         self.queue.submit(Some(encoder.finish()));
         surface_texture.present();
