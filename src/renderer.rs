@@ -22,6 +22,7 @@ pub struct Renderer {
     pub scale_factor: f32,
     pub egui_renderer: EguiRenderer,
     pub pipeline: wgpu::RenderPipeline,
+    pub fade_pipeline: wgpu::RenderPipeline, // NEW: fade pipeline
     pub uniform_buffer: wgpu::Buffer,
     pub instance_buffer: wgpu::Buffer,
     pub vertex_buffer: wgpu::Buffer,
@@ -88,6 +89,7 @@ impl Renderer {
         let egui_renderer = EguiRenderer::new(&device, surface_config.format, None, 1, window);
         let scale_factor = 1.0;
 
+        // Particle shader & pipeline (unchanged except for clarity)
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("N-Body Shader"),
             source: wgpu::ShaderSource::Wgsl(
@@ -95,9 +97,11 @@ impl Renderer {
             ),
         });
 
+        // We reuse the same bind group layout for all pipelines.
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Bind Group Layout"),
             entries: &[
+                // Binding 0: texture
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::FRAGMENT,
@@ -108,12 +112,14 @@ impl Renderer {
                     },
                     count: None,
                 },
+                // Binding 1: sampler
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // Binding 2: uniform (resolution)
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
                     visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
@@ -128,7 +134,7 @@ impl Renderer {
         });
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("Pipeline Layout"),
+            label: Some("Particle Pipeline Layout"),
             bind_group_layouts: &[&bind_group_layout],
             push_constant_ranges: &[],
         });
@@ -141,15 +147,15 @@ impl Renderer {
                 entry_point: "vs_main",
                 compilation_options: Default::default(),
                 buffers: &[
+                    // Particle quad vertices
                     wgpu::VertexBufferLayout {
-                        array_stride: (std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress)
-                            as wgpu::BufferAddress,
+                        array_stride: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &wgpu::vertex_attr_array![0 => Float32x2],
                     },
+                    // Per-instance particle data
                     wgpu::VertexBufferLayout {
-                        array_stride: (std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress)
-                            as wgpu::BufferAddress,
+                        array_stride: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
                         step_mode: wgpu::VertexStepMode::Instance,
                         attributes: &wgpu::vertex_attr_array![1 => Float32x3],
                     },
@@ -162,13 +168,15 @@ impl Renderer {
                 targets: &[Some(wgpu::ColorTargetState {
                     format: surface_config.format,
                     blend: Some(wgpu::BlendState {
+                        // For color we blend new particle color over the faded background.
                         color: wgpu::BlendComponent {
                             src_factor: wgpu::BlendFactor::SrcAlpha,
                             dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
                             operation: wgpu::BlendOperation::Add,
                         },
+                        // Here we use a “replace” for alpha
                         alpha: wgpu::BlendComponent {
-                            src_factor: wgpu::BlendFactor::One,
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
                             dst_factor: wgpu::BlendFactor::Zero,
                             operation: wgpu::BlendOperation::Add,
                         },
@@ -191,39 +199,35 @@ impl Renderer {
             cache: None,
         });
 
+        // Create a uniform buffer for screen resolution
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniform Buffer"),
-            // todo: update on resize?
-            contents: bytemuck::cast_slice(&[
-                window.inner_size().width,
-                window.inner_size().height,
-            ]),
+            contents: bytemuck::cast_slice(&[window.inner_size().width as f32, window.inner_size().height as f32]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        // Initialize particle buffer with dummy data
-        let initial_particles = vec![[0.0f32, 0.0f32, 0.0f32]; 10000];
+        // Initialize particle instance buffer with dummy data.
+        let initial_particles = vec![[0.0f32, 0.0f32, 0.0f32]; 1000];
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Particle Instance Buffer"),
             contents: bytemuck::cast_slice(&initial_particles),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
+        // Create vertex buffer for a quad (scaled down)
         let quad_vertices = [
-            [-1.0, -1.0], // Bottom-left
-            [1.0, -1.0],  // Bottom-right
-            [1.0, 1.0],   // Top-right
-            [-1.0, -1.0], // Bottom-left (reused)
-            [1.0, 1.0],   // Top-right (reused)
-            [-1.0, 1.0],  // Top-left
+            [-1.0, -1.0],
+            [ 1.0, -1.0],
+            [ 1.0,  1.0],
+            [-1.0, -1.0],
+            [ 1.0,  1.0],
+            [-1.0,  1.0],
         ]
         .iter()
-        .map(|x| {
-            x.iter()
-                .map(|x| x * 0.01)
-                .collect::<Vec<f32>>()
-                .try_into()
-                .unwrap()
+        .map(|v| {
+            // Scale down the quad
+            let scale = 0.01;
+            [v[0] * scale, v[1] * scale]
         })
         .collect::<Vec<[f32; 2]>>();
 
@@ -233,6 +237,7 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
+        // Create the ping-pong render textures.
         let render_texture_a = create_render_texture(&device, surface_config.format, width, height);
         let render_texture_b = create_render_texture(&device, surface_config.format, width, height);
         let use_target_a = true;
@@ -246,12 +251,13 @@ impl Renderer {
             min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::FilterMode::Linear,
             lod_min_clamp: 0.0,
-            lod_max_clamp: 100.0, // Default; adjust based on mipmap usage
+            lod_max_clamp: 100.0,
             compare: None,
             anisotropy_clamp: 1,
             border_color: None,
         });
 
+        // Create the screen (fullscreen) pipeline.
         let screen_shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Fullscreen Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader/fullscreen_texture.wgsl").into()),
@@ -300,6 +306,63 @@ impl Renderer {
             cache: None,
         });
 
+        // Create the fade pipeline.
+        // The fade shader multiplies every pixel by 0.95.
+        let fade_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("Fade Shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shader/fullscreen_fade.wgsl").into()),
+        });
+        let fade_pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("Fade Pipeline Layout"),
+            bind_group_layouts: &[&bind_group_layout],
+            push_constant_ranges: &[],
+        });
+        let fade_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("Fade Render Pipeline"),
+            layout: Some(&fade_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &fade_shader,
+                entry_point: "vs_main",
+                buffers: &[],
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &fade_shader,
+                entry_point: "fs_main",
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_config.format,
+                    // No blending is needed here; the shader does a multiplicative fade.
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::Zero,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::Zero,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                strip_index_format: None,
+                front_face: wgpu::FrontFace::Ccw,
+                cull_mode: None,
+                polygon_mode: wgpu::PolygonMode::Fill,
+                unclipped_depth: false,
+                conservative: false,
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            multiview: None,
+            cache: None,
+        });
+
         let render_frames = Arc::new(Mutex::new(FrameQueue::new(300)));
 
         Self {
@@ -310,6 +373,7 @@ impl Renderer {
             scale_factor,
             egui_renderer,
             pipeline,
+            fade_pipeline, // NEW
             uniform_buffer,
             instance_buffer,
             vertex_buffer,
@@ -342,28 +406,89 @@ impl Renderer {
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
 
-
-        // trail pass
-        let target_texture = if self.use_target_a {
-            &self.render_texture_a
+        // --- Ping-pong: determine source and target textures ---
+        // In this scheme, we fade from the "source" texture and write into the "target",
+        // then draw particles on top of the target. Finally, we display the target.
+        let (source_texture, target_texture) = if self.use_target_a {
+            (&self.render_texture_a, &self.render_texture_b)
         } else {
-            &self.render_texture_b
+            (&self.render_texture_b, &self.render_texture_a)
         };
 
-        let source_texture = if self.use_target_a {
-            &self.render_texture_b
-        } else {
-            &self.render_texture_a
-        };
-
-        // nbody to texture pass
+        // --- Fade Pass --- 
+        // Create a bind group for the fade pass that samples from the source texture.
+        let fade_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Fade Bind Group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                // Binding 0: sample from source_texture
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(source_texture),
+                },
+                // Binding 1: sampler
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                // Binding 2: uniform buffer (resolution)
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
+            ],
+        });
         {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("Ping Pong Render Pass"),
+            // Fade pass: write into target_texture
+            let mut fade_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Fade Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: target_texture,
                     resolve_target: None,
                     ops: wgpu::Operations {
+                        // Load existing data from target (it will be overwritten by the fade)
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+            });
+            fade_pass.set_pipeline(&self.fade_pipeline);
+            fade_pass.set_bind_group(0, &fade_bind_group, &[]);
+            fade_pass.draw(0..6, 0..1);
+        }
+
+        // --- Particle Pass ---
+        // Now draw new particles on top of the faded target texture.
+        let particle_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Particle Blend Bind Group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                // In the particle pass, we want to sample from the background—the target texture
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(source_texture),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.uniform_buffer.as_entire_binding(),
+                },
+            ],
+        });
+        {
+            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("Particle Render Pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: target_texture,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        // Keep the faded background and add new particles on top.
                         load: wgpu::LoadOp::Load,
                         store: wgpu::StoreOp::Store,
                     },
@@ -373,25 +498,7 @@ impl Renderer {
                 occlusion_query_set: None,
             });
 
-            let bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("Blend Bind Group"),
-                layout: &self.bind_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(source_texture),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: self.uniform_buffer.as_entire_binding(),
-                    },
-                ],
-            });
-
+            // Update particle positions
             self.queue.write_buffer(
                 &self.instance_buffer,
                 0,
@@ -399,13 +506,14 @@ impl Renderer {
             );
 
             render_pass.set_pipeline(&self.pipeline);
-            render_pass.set_bind_group(0, &bind_group, &[]);
+            render_pass.set_bind_group(0, &particle_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             render_pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
             render_pass.draw(0..6, 0..simulation_state.particle_count);
         }
 
-        // texture to screen pass
+        // --- Screen Pass ---
+        // Draw the final target texture to the screen.
         {
             let mut screen_render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Screen Render Pass"),
@@ -446,9 +554,10 @@ impl Renderer {
             screen_render_pass.draw(0..6, 0..1);
         }
 
+        // Swap for next frame.
         self.use_target_a = !self.use_target_a;
 
-        // egui pass
+        // --- Egui Pass (unchanged) ---
         {
             self.egui_renderer.begin_frame(window);
 
@@ -479,11 +588,6 @@ impl Renderer {
 
                     ui.separator();
                     ui.horizontal(|ui| {
-                        /*
-                        if let Ok(sim_frames) = simulation_frames.lock() {
-                            ui.label(format!("Simulation FPS: {:.2}", sim_frames.calculate_fps()));
-                        }
-                        */
                         if let Ok(render_frames) = self.render_frames.lock() {
                             ui.label(format!("Render FPS: {:.2}", render_frames.calculate_fps()));
                         }
@@ -503,9 +607,7 @@ impl Renderer {
         self.queue.submit(Some(encoder.finish()));
         surface_texture.present();
 
-        {
-            self.render_frames.lock().unwrap().record_frame();
-        }
+        self.render_frames.lock().unwrap().record_frame();
     }
 
     pub fn resize_surface(&mut self, width: u32, height: u32) {

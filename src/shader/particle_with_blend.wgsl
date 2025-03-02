@@ -36,7 +36,7 @@ fn fs_main(in: VSOutput) -> @location(0) vec4<f32> {
     let prev_color = textureSample(prev_frame, prev_sampler, uv);
 
     // Fade the previous frame (reduce alpha)
-    let faded_color = vec4(prev_color.rgb, prev_color.a * 0.95);
+    let faded_color = vec4(prev_color.rgb, prev_color.a * 0.90);
 
     // Compute the distance from the center of the particle
     let dist = length(in.quad_position);
