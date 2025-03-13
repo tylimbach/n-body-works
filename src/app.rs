@@ -23,7 +23,7 @@ pub struct App {
 impl App {
     pub fn new() -> Self {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
-        let simulation = Arc::new(Mutex::new(SimulationState::new(110000, true)));
+        let simulation = Arc::new(Mutex::new(SimulationState::new(110000, false)));
         Self {
             instance,
             window: None,
@@ -35,8 +35,8 @@ impl App {
 
     async fn set_window(&mut self, window: Window) {
         let window = Arc::new(window);
-        let initial_width = 1360;
-        let initial_height = 1360;
+        let initial_width = 500;
+        let initial_height = 500;
 
         let _ = window.request_inner_size(PhysicalSize::new(initial_width, initial_height));
 

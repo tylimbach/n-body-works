@@ -9,6 +9,8 @@ use std::sync::{Arc, Mutex};
 use wgpu::util::DeviceExt;
 use winit::window::Window;
 
+const PCOUNT : usize = 110000;
+
 pub enum RenderMode {
     Default,
     Trail,
@@ -204,7 +206,7 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let initial_particles = vec![[0.0f32, 0.0f32, 0.0f32]; 110000];
+        let initial_particles = vec![[0.0f32, 0.0f32, 0.0f32]; PCOUNT];
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Particle Instance Buffer"),
             contents: bytemuck::cast_slice(&initial_particles),
@@ -432,7 +434,6 @@ impl Renderer {
             ],
         });
         {
-            // Fade pass: write into target_texture
             let mut fade_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("Fade Pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -550,36 +551,32 @@ impl Renderer {
         // Swap for next frame.
         self.use_target_a = !self.use_target_a;
 
-        // --- Egui Pass (unchanged) ---
+        // --- Egui Pass ---
         {
             self.egui_renderer.begin_frame(window);
 
-            egui::Window::new("winit + egui + wgpu says hello!")
+            egui::Window::new("overlay")
                 .resizable(true)
+                .default_size(egui::Vec2::new(60.0, 40.0))
                 .vscroll(true)
-                .default_open(false)
+                .default_open(true)
                 .show(self.egui_renderer.context(), |ui| {
-                    ui.label("Label!");
-
-                    if ui.button("Button!").clicked() {
-                        println!("boom!")
-                    }
-
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.label(format!(
-                            "Pixels per point: {}",
-                            self.egui_renderer.context().pixels_per_point()
-                        ));
-                        if ui.button("-").clicked() {
-                            self.scale_factor = (self.scale_factor - 0.1).max(0.3);
-                        }
-                        if ui.button("+").clicked() {
-                            self.scale_factor = (self.scale_factor + 0.1).min(3.0);
-                        }
-                    });
-
-                    ui.separator();
+                    // ui.separator();
+                    // ui.horizontal(|ui| {
+                    //     ui.label(format!(
+                    //         "Pixels per point: {}",
+                    //         self.egui_renderer.context().pixels_per_point()
+                    //     ));
+                    //     if ui.button("-").clicked() {
+                    //         self.scale_factor = (self.scale_factor - 0.1).max(0.3);
+                    //     }
+                    //     if ui.button("+").clicked() {
+                    //         self.scale_factor = (self.scale_factor + 0.1).min(3.0);
+                    //     }
+                    // });
+                    //
+                    // ui.separator();
+                    ui.label(format!("Particles: {}", PCOUNT));
                     ui.horizontal(|ui| {
                         if let Ok(render_frames) = self.render_frames.lock() {
                             ui.label(format!("Render FPS: {:.2}", render_frames.calculate_fps()));

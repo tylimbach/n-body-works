@@ -46,7 +46,7 @@ impl SimulationState {
             positions
             .iter()
             .map(|[x, y, _]| {
-                let speed = rng.gen_range(0.002..0.004);
+                let speed = rng.gen_range(0.01..0.02);
                 let magnitude = f32::sqrt(x * x + y * y);
                 [-y / magnitude * speed, x / magnitude * speed, 0.0]
             })
@@ -58,7 +58,7 @@ impl SimulationState {
             positions,
             velocities,
             accelerations: vec![[0.0; 3]; particle_count as usize],
-            masses: vec![1000.0; particle_count as usize],
+            masses: vec![100.0; particle_count as usize],
             g: 6.67430e-11,
         }
     }
