@@ -92,7 +92,7 @@ impl Renderer {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("N-Body Shader"),
             source: wgpu::ShaderSource::Wgsl(
-                include_str!("shader/particle_with_blend.wgsl").into(),
+                include_str!("shader/particle.wgsl").into(),
             ),
         });
 
@@ -143,7 +143,7 @@ impl Renderer {
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 compilation_options: Default::default(),
                 buffers: &[
                     // Particle quad vertices
@@ -162,7 +162,7 @@ impl Renderer {
             },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: surface_config.format,
@@ -270,13 +270,13 @@ impl Renderer {
             layout: Some(&screen_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &screen_shader_module,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers: &[],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &screen_shader_module,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: surface_config.format,
                     blend: None,
@@ -315,13 +315,13 @@ impl Renderer {
             layout: Some(&fade_pipeline_layout),
             vertex: wgpu::VertexState {
                 module: &fade_shader,
-                entry_point: "vs_main",
+                entry_point: Some("vs_main"),
                 buffers: &[],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             },
             fragment: Some(wgpu::FragmentState {
                 module: &fade_shader,
-                entry_point: "fs_main",
+                entry_point: Some("fs_main"),
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
                 targets: &[Some(wgpu::ColorTargetState {
                     format: surface_config.format,

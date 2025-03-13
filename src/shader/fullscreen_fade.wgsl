@@ -16,6 +16,5 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32) -> @builtin(position) vec4<
 fn fs_main(@builtin(position) frag_coord: vec4<f32>) -> @location(0) vec4<f32> {
     let uv = frag_coord.xy / resolution;
     let col = textureSample(input_texture, input_sampler, uv);
-    // Apply a global fade (e.g., 95% of the previous value)
-    return col - 0.01;
+    return col * 0.8;
 }

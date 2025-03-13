@@ -22,7 +22,7 @@ pub struct App {
 
 impl App {
     pub fn new() -> Self {
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::default());
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let simulation = Arc::new(Mutex::new(SimulationState::new(110000, true)));
         Self {
             instance,
@@ -64,7 +64,6 @@ impl App {
 
     fn handle_redraw(&mut self) {
         let now = Instant::now();
-        let dt = (now - self.frame_queue.get_last_frame().unwrap_or(now)).as_secs_f32();
         self.frame_queue.record_frame();
 
         let time_step = 0.1;

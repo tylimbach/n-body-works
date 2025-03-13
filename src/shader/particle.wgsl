@@ -9,6 +9,7 @@ struct VSInput {
     @location(1) position: vec3<f32>,
 }
 
+// todo: don't need these anymore
 @group(0) @binding(0) var screen_texture: texture_2d<f32>;
 @group(0) @binding(1) var tex_sampler: sampler;
 @group(0) @binding(2) var<uniform> resolution: vec2<f32>;
