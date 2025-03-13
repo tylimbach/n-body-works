@@ -204,7 +204,7 @@ impl Renderer {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        let initial_particles = vec![[0.0f32, 0.0f32, 0.0f32]; 80000];
+        let initial_particles = vec![[0.0f32, 0.0f32, 0.0f32]; 110000];
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Particle Instance Buffer"),
             contents: bytemuck::cast_slice(&initial_particles),
