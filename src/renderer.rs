@@ -89,7 +89,6 @@ impl Renderer {
         let egui_renderer = EguiRenderer::new(&device, surface_config.format, None, 1, window);
         let scale_factor = 1.0;
 
-        // Particle shader & pipeline (unchanged except for clarity)
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("N-Body Shader"),
             source: wgpu::ShaderSource::Wgsl(
@@ -97,7 +96,7 @@ impl Renderer {
             ),
         });
 
-        // We reuse the same bind group layout for all pipelines.
+        // reuse the same bind group layout for all pipelines.
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("Bind Group Layout"),
             entries: &[
@@ -199,22 +198,19 @@ impl Renderer {
             cache: None,
         });
 
-        // Create a uniform buffer for screen resolution
         let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Uniform Buffer"),
             contents: bytemuck::cast_slice(&[window.inner_size().width as f32, window.inner_size().height as f32]),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
 
-        // Initialize particle instance buffer with dummy data.
-        let initial_particles = vec![[0.0f32, 0.0f32, 0.0f32]; 1000];
+        let initial_particles = vec![[0.0f32, 0.0f32, 0.0f32]; 80000];
         let instance_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Particle Instance Buffer"),
             contents: bytemuck::cast_slice(&initial_particles),
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
-        // Create vertex buffer for a quad (scaled down)
         let quad_vertices = [
             [-1.0, -1.0],
             [ 1.0, -1.0],
@@ -237,7 +233,7 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
 
-        // Create the ping-pong render textures.
+        // ping pong textures
         let render_texture_a = create_render_texture(&device, surface_config.format, width, height);
         let render_texture_b = create_render_texture(&device, surface_config.format, width, height);
         let use_target_a = true;
@@ -257,7 +253,6 @@ impl Renderer {
             border_color: None,
         });
 
-        // Create the screen (fullscreen) pipeline.
         let screen_shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Fullscreen Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader/fullscreen_texture.wgsl").into()),
@@ -306,8 +301,6 @@ impl Renderer {
             cache: None,
         });
 
-        // Create the fade pipeline.
-        // The fade shader multiplies every pixel by 0.95.
         let fade_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("Fade Shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader/fullscreen_fade.wgsl").into()),

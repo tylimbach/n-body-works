@@ -1,5 +1,24 @@
 use rand::Rng;
 
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct Float3 {
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+extern "C" {
+    fn compute_accelerations(
+        host_positions: *const f32,
+        host_masses: *const f32,
+        host_accelerations: *mut f32,
+        particle_count: i32,
+        g: f32,
+        softening: f32,
+    );
+}
+
 #[derive(Clone)]
 pub struct SimulationState {
     pub particle_count: u32,
@@ -11,7 +30,7 @@ pub struct SimulationState {
 }
 
 impl SimulationState {
-    pub fn new(particle_count: u32) -> Self {
+    pub fn new(particle_count: u32, start_stationary: bool) -> Self {
         let mut rng = rand::thread_rng();
         let positions: Vec<[f32; 3]> = (0..particle_count)
             .map(|_| {
@@ -21,14 +40,18 @@ impl SimulationState {
             })
             .collect();
 
-        let velocities = positions
+        let velocities = if start_stationary {
+            vec![[0.0, 0.0, 0.0]; particle_count as usize]
+        } else { 
+            positions
             .iter()
             .map(|[x, y, _]| {
                 let speed = rng.gen_range(0.002..0.004);
                 let magnitude = f32::sqrt(x * x + y * y);
                 [-y / magnitude * speed, x / magnitude * speed, 0.0]
             })
-            .collect();
+            .collect()
+        };
 
         Self {
             particle_count,
@@ -83,6 +106,20 @@ impl SimulationState {
         }
     }
 
+    fn update_acceleration_cuda(&mut self) {
+        let softening = 1e-4;
+        unsafe {
+            compute_accelerations(
+                self.positions.as_ptr() as *const f32,
+                self.masses.as_ptr(),
+                self.accelerations.as_mut_ptr() as *mut f32,
+                self.particle_count as i32,
+                self.g,
+                softening,
+            );
+        }
+    }
+
     #[allow(dead_code)]
     fn update_euler(&mut self, dt: f32) {
         self.update_acceleration();
@@ -104,7 +141,7 @@ impl SimulationState {
             }
         }
 
-        self.update_acceleration();
+        self.update_acceleration_cuda();
 
         for p1 in 0..self.particle_count as usize {
             for i in 0..3 {
