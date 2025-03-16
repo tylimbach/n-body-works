@@ -1,5 +1,6 @@
 CompileFlags:
-  Add:
-    - --cuda-path=C://Program Files//NVIDIA GPU Computing Toolkit//CUDA//v12.8
-    - -LC://Program Files//NVIDIA GPU Computing Toolkit//CUDA//v12.8//lib
-    - -IC://Program Files//NVIDIA GPU Computing Toolkit//CUDA//v12.8//include
+  Remove: [
+    "-Xcompiler=-fPIC",
+    "--generate-code=arch=compute_52,code=[compute_52,sm_52]",
+    "-forward-unknown-to-host-compiler",
+  ]
