@@ -2,7 +2,7 @@ use crate::diagnostic::FrameQueue;
 use crate::egui_tools::EguiRenderer;
 use crate::simulation::SimulationState;
 use egui_wgpu::{
-    wgpu::{self, util::RenderEncoder},
+    wgpu::{self},
     ScreenDescriptor,
 };
 use std::sync::{Arc, Mutex};
@@ -10,11 +10,6 @@ use wgpu::util::DeviceExt;
 use winit::window::Window;
 
 const PCOUNT : usize = 110000;
-
-pub enum RenderMode {
-    Default,
-    Trail,
-}
 
 pub struct Renderer {
     pub device: wgpu::Device,
@@ -24,7 +19,7 @@ pub struct Renderer {
     pub scale_factor: f32,
     pub egui_renderer: EguiRenderer,
     pub pipeline: wgpu::RenderPipeline,
-    pub fade_pipeline: wgpu::RenderPipeline, // NEW: fade pipeline
+    pub fade_pipeline: wgpu::RenderPipeline,
     pub uniform_buffer: wgpu::Buffer,
     pub instance_buffer: wgpu::Buffer,
     pub vertex_buffer: wgpu::Buffer,

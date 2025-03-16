@@ -8,6 +8,7 @@ pub struct TripleBuffer<T: Clone> {
     swap_index: AtomicUsize,
 }
 
+#[allow(dead_code)]
 impl<T: Clone> TripleBuffer<T> {
     pub fn new(initial_state: T) -> Self {
         Self {

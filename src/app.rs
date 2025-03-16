@@ -3,7 +3,6 @@ use crate::renderer::Renderer;
 use crate::simulation::SimulationState;
 use egui_wgpu::wgpu;
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 use winit::dpi::PhysicalSize;
 use winit::{
     application::ApplicationHandler,
@@ -63,7 +62,6 @@ impl App {
     }
 
     fn handle_redraw(&mut self) {
-        let now = Instant::now();
         self.frame_queue.record_frame();
 
         let time_step = 0.1;

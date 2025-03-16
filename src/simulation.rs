@@ -1,13 +1,5 @@
 use rand::Rng;
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug)]
-pub struct Float3 {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
-}
-
 extern "C" {
     fn compute_accelerations(
         host_positions: *const f32,
@@ -31,11 +23,11 @@ pub struct SimulationState {
 
 impl SimulationState {
     pub fn new(particle_count: u32, start_stationary: bool) -> Self {
-        let mut rng = rand::thread_rng();
+        let mut rng = rand::rng();
         let positions: Vec<[f32; 3]> = (0..particle_count)
             .map(|_| {
-                let r = f32::powf(rng.gen_range(0.0..0.9), 0.1);
-                let theta = rng.gen_range(0.0..std::f32::consts::TAU);
+                let r = f32::powf(rng.random_range(0.0..0.9), 0.1);
+                let theta = rng.random_range(0.0..std::f32::consts::TAU);
                 [r * theta.cos(), r * theta.sin(), 0.0]
             })
             .collect();
@@ -46,7 +38,7 @@ impl SimulationState {
             positions
             .iter()
             .map(|[x, y, _]| {
-                let speed = rng.gen_range(0.01..0.02);
+                let speed = rng.random_range(0.01..0.02);
                 let magnitude = f32::sqrt(x * x + y * y);
                 [-y / magnitude * speed, x / magnitude * speed, 0.0]
             })
@@ -58,7 +50,7 @@ impl SimulationState {
             positions,
             velocities,
             accelerations: vec![[0.0; 3]; particle_count as usize],
-            masses: vec![100.0; particle_count as usize],
+            masses: vec![300.0; particle_count as usize],
             g: 6.67430e-11,
         }
     }
@@ -107,7 +99,7 @@ impl SimulationState {
     }
 
     fn update_acceleration_cuda(&mut self) {
-        let softening = 1e-4;
+        let softening = 1e-3;
         unsafe {
             compute_accelerations(
                 self.positions.as_ptr() as *const f32,

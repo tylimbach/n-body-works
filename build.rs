@@ -19,7 +19,7 @@ fn main() {
     let root_compile_commands = Path::new("compile_commands.json");
 
     if compile_commands_path.exists() {
-        if let Err(err) = fs::copy(&compile_commands_path, &root_compile_commands) {
+        if let Err(err) = fs::copy(&compile_commands_path, root_compile_commands) {
             eprintln!("Failed to copy compile_commands.json: {}", err);
         }
     } else {
