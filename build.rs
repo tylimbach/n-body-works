@@ -2,8 +2,52 @@ use std::env;
 use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
+use std::process::Command;
 
 fn main() {
+    // Check if CUDA is available
+    let cuda_available = detect_cuda();
+    
+    if cuda_available {
+        println!("cargo:rustc-cfg=feature=\"cuda\"");
+        build_with_cuda();
+    } else {
+        println!("cargo:rustc-cfg=feature=\"no_cuda\"");
+        println!("cargo:warning=Building without CUDA support");
+    }
+    
+    println!("cargo:rerun-if-changed=src/cuda");
+}
+
+fn detect_cuda() -> bool {
+    // Check for M1/M2 Mac (Apple Silicon) which doesn't support CUDA
+    if cfg!(target_os = "macos") {
+        let output = Command::new("uname")
+            .arg("-m")
+            .output()
+            .ok();
+            
+        if let Some(output) = output {
+            if output.status.success() {
+                let arch = String::from_utf8_lossy(&output.stdout);
+                if arch.trim() == "arm64" {
+                    return false; // Apple Silicon detected
+                }
+            }
+        }
+    }
+    
+    // Check for nvcc compiler
+    let nvcc_available = Command::new("nvcc")
+        .arg("--version")
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false);
+        
+    nvcc_available
+}
+
+fn build_with_cuda() {
     let dst = cmake::Config::new("src/cuda")
         .define("CMAKE_BUILD_TYPE", "Release")
         .define("CMAKE_EXPORT_COMPILE_COMMANDS", "ON")
@@ -31,6 +75,8 @@ fn main() {
 
     let output_file = if cfg!(target_os = "windows") {
         "nbody.dll"
+    } else if cfg!(target_os = "macos") {
+        "libnbody.dylib"
     } else {
         "libnbody.so"
     };
@@ -49,6 +95,4 @@ fn main() {
     let dll_dst = target_dir.join(output_file);
 
     fs::copy(&dll_src, &dll_dst).unwrap_or_else(|_| panic!("Failed to copy {:?} to {:?}", dll_src, dll_dst));
-
-    println!("cargo:rerun-if-changed=src/cuda");
 }

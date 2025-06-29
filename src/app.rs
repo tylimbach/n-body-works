@@ -39,17 +39,18 @@ impl App {
 
         let _ = window.request_inner_size(PhysicalSize::new(initial_width, initial_height));
 
-        let surface = self
+        let surface = unsafe { self
             .instance
             .create_surface(window.clone())
-            .expect("Failed to create surface!");
+            .expect("Failed to create surface!")
+        };
 
         let renderer = Renderer::new(
             &self.instance,
             surface,
             &window,
             initial_width,
-            initial_width,
+            initial_height,
         )
             .await;
 

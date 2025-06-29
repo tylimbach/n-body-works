@@ -59,6 +59,7 @@ impl SimulationState {
         self.update_leapfrog(dt);
     }
 
+    #[cfg(feature = "no_cuda")]
     fn update_acceleration(&mut self) {
         // F = (G*m1m2/(r*r)) * (unit vector)
         // F = ma
@@ -98,7 +99,8 @@ impl SimulationState {
         }
     }
 
-    fn update_acceleration_cuda(&mut self) {
+    #[cfg(feature = "cuda")]
+    fn update_acceleration(&mut self) {
         let softening = 1e-3;
         unsafe {
             compute_accelerations(
@@ -133,7 +135,7 @@ impl SimulationState {
             }
         }
 
-        self.update_acceleration_cuda();
+        self.update_acceleration();
 
         for p1 in 0..self.particle_count as usize {
             for i in 0..3 {
